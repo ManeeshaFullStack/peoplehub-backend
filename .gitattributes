@@ -1,0 +1,21 @@
+# Normalise line endings. Repo content is LF; Windows-only scripts are CRLF.
+# Shell scripts (mvnw, container entrypoints) MUST stay LF or they break on Linux/CI/Docker.
+* text=auto eol=lf
+
+/mvnw text eol=lf
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary files: never touch
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.p12 binary
+*.jks binary

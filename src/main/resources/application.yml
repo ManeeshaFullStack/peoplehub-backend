@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: peoplehub-backend
+
+  # Connection settings come from the environment via Spring's standard relaxed binding
+  # (SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD,
+  #  SPRING_DATA_REDIS_HOST, SPRING_DATA_REDIS_PORT, SPRING_DATA_REDIS_PASSWORD). See .env.example.
+  # Nothing secret or environment-specific is defined here; a missing value fails fast at startup.
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Schema is owned by Flyway. Hibernate only verifies that entities match it (Spec 16.2, CLAUDE.md 9).
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    # Forward-only migrations (Spec 2, 16.2): never clean, never reorder, never baseline over existing data.
+    clean-disabled: true
+    validate-on-migrate: true
+    out-of-order: false
+    baseline-on-migrate: false
+
+  data:
+    redis:
+      timeout: 2s
+      connect-timeout: 2s
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    # Off by default: it is an unauthenticated surface until authentication exists (B2). Enable it locally
+    # with SPRINGDOC_SWAGGER_UI_ENABLED=true. The JSON at /v3/api-docs stays on for contract tooling.
+    enabled: false
+  default-produces-media-type: application/json
+  default-consumes-media-type: application/json

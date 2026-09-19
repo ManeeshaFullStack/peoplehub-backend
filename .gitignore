@@ -1,0 +1,116 @@
+# ─────────────────────────────────────────────────────────────
+# PeopleHub backend — Java 21 / Spring Boot / Maven / Docker
+# ─────────────────────────────────────────────────────────────
+
+# ── Build output ─────────────────────────────────────────────
+target/
+out/
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+# Keep the Maven wrapper jar if the project commits it
+!.mvn/wrapper/maven-wrapper.jar
+
+# ── Test & coverage reports ──────────────────────────────────
+*.exec
+jacoco*.exec
+.jacoco/
+surefire-reports/
+failsafe-reports/
+.testcontainers/
+
+# ── Secrets & environment (never commit — Spec 15.12, 16.4) ──
+# Real env files stay local; only *.example templates are tracked.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.env
+!*.env.example
+# Keys, keystores, certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+!**/src/test/resources/**/*.pem
+!**/src/test/resources/**/*.crt
+secrets/
+application-secret*.yml
+application-secret*.yaml
+application-secret*.properties
+.sentryclirc
+gitleaks-report.*
+
+# ── Docker / compose local overrides ─────────────────────────
+docker-compose.override.yml
+compose.override.yml
+.docker/
+docker-data/
+pgdata/
+redisdata/
+
+# ── Logs & runtime files ─────────────────────────────────────
+logs/
+*.log
+*.log.*
+*.pid
+*.tmp
+*.swp
+*.swo
+*~
+.spring-boot-devtools.properties
+
+# ── IntelliJ IDEA (personal/workspace state; see Spec 21) ────
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+.run/*.local.run.xml
+
+# ── Other editors ────────────────────────────────────────────
+.vscode/
+.project
+.classpath
+.settings/
+.factorypath
+.apt_generated/
+.springBeans
+.sts4-cache/
+nbproject/
+nbbuild/
+nbdist/
+.nb-gradle/
+*.sublime-project
+*.sublime-workspace
+
+# ── Claude Code (local-only settings; shared config stays tracked) ──
+.claude/settings.local.json
+CLAUDE.local.md
+
+# ── Static analysis / scanner local output ───────────────────
+.scannerwork/
+.sonarlint/
+dependency-check-report.*
+
+# ── Generated / downloaded docs & specs ──────────────────────
+HELP.md
+openapi.local.json
+
+# ── OS files ─────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

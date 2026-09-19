@@ -1,0 +1,6 @@
+# gitleaks fingerprints to ignore. Every entry MUST have a comment explaining why it is a false positive.
+# Never add a real secret here: rotate/revoke it instead. Prefer exact fingerprints over path allowlists.
+
+# False positive: a prose bullet in CLAUDE.md (section 7, password-storage rule) matched by the generic-api-key
+# rule. No credential present. The wording has since changed; the original commit remains in history.
+ee700499f45e74967367854b2b8c144b2545334c:CLAUDE.md:generic-api-key:117
