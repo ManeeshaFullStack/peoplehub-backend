@@ -7,16 +7,18 @@ organization is a completely private workspace; that tenant model is **not imple
 - **Source of truth:** [`PROJECT_MASTER_SPEC.md`](PROJECT_MASTER_SPEC.md) (v9). Scope changes update the spec first,
   through a branch and pull request.
 - **Engineering rules:** [`CLAUDE.md`](CLAUDE.md) (workflow, architecture, security, testing, known spec issues).
-- **Status:** Phase B0 (Foundation): `b0-1` to `b0-5` are merged; `b0-6` (append-only audit log) and `b0-7`
-  (docker-compose) are not started. The app is a runnable foundation with no business endpoints yet.
+- **Status:** Phase B0 (Foundation): `b0-1` to `b0-5` are merged; `b0-6` (append-only audit log) is implemented on
+  its branch and awaiting review; `b0-7` (docker-compose) is not started. The app is a runnable foundation with no
+  business endpoints yet.
 
 ## Scope: implemented now vs specified for later
 
-**Implemented (b0-1 to b0-5):** build and CI (tests, Spotless, secret scan); PostgreSQL with Flyway migrations and Redis;
+**Implemented (b0-1 to b0-6):** build and CI (tests, Spotless, secret scan); PostgreSQL with Flyway migrations and Redis;
 the API standards (`/api/v1` base path, pagination and sort envelope, one RFC 9457 problem-error shape, correlation
 ids, OpenAPI via springdoc); structured JSON logging with a request log; Sentry with PII scrubbing (off unless a DSN
-is set); Actuator health and readiness probes; graceful shutdown; and a scheduler (`@Scheduled` guarded by ShedLock,
-with `JobRunner`). Sections below describe these.
+is set); Actuator health and readiness probes; graceful shutdown; a scheduler (`@Scheduled` guarded by ShedLock, with
+`JobRunner`); and an append-only audit log with separate database roles for migrations and for the running
+application. Sections below describe these.
 
 **Specified by v9 but not implemented (future phases, mainly B2, F1 and security work):** multi-organization SaaS with
 hard tenant isolation (`organization_id` is the tenant boundary, and no tenant can discover another); founder-only
@@ -58,12 +60,51 @@ The app reads its connections from environment variables, using Spring's standar
 
 | Variable | Purpose |
 |---|---|
-| `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD` | PostgreSQL |
+| `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD` | PostgreSQL, as the **runtime** role (least privilege) |
+| `SPRING_FLYWAY_USER`, `SPRING_FLYWAY_PASSWORD`, optional `SPRING_FLYWAY_URL` | Migrations, as the **owner** role (see "Database roles") |
+| `PEOPLEHUB_DB_RUNTIME_ROLE` | Name of the runtime role the migrations grant privileges to (default `peoplehub_app`) |
 | `SPRING_DATA_REDIS_HOST`, `SPRING_DATA_REDIS_PORT`, `SPRING_DATA_REDIS_PASSWORD` | Redis |
 
-Nothing has a default: a missing database setting stops startup immediately. `spring-boot:test-run` needs none of these.
-Flyway applies the migrations in `src/main/resources/db/migration` on startup. Migrations are forward-only; never edit
-one that has already been merged, add a new `V<n>__description.sql` instead.
+The database settings have no defaults (except the role name): a missing one stops startup immediately.
+`spring-boot:test-run` needs none of these. Flyway applies the migrations in `src/main/resources/db/migration` on
+startup. Migrations are forward-only; never edit one that has already been merged, add a new `V<n>__description.sql`
+instead.
+
+### Database roles
+
+The application uses **two PostgreSQL roles** (Spec 15, CLAUDE.md §9):
+
+| Role | Used for | Configured by |
+|---|---|---|
+| **Owner** (migration role) | Runs Flyway; owns the tables. Not a superuser. | `SPRING_FLYWAY_USER` / `SPRING_FLYWAY_PASSWORD` |
+| **Runtime** (`peoplehub_app` by default) | What the running application connects as. Gets only the privileges each migration grants. | `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD`, name in `PEOPLEHUB_DB_RUNTIME_ROLE` |
+
+**Flyway never creates roles** (`CREATE ROLE` needs elevated privileges), so both roles must exist **before the first
+start**. Provision them once per database as part of infrastructure setup, as a database administrator, for example:
+
+```sql
+CREATE ROLE peoplehub_owner LOGIN PASSWORD '...';          -- migration/owner role
+CREATE ROLE peoplehub_app   LOGIN PASSWORD '...';          -- runtime role
+CREATE DATABASE peoplehub OWNER peoplehub_owner;
+\c peoplehub
+GRANT CONNECT ON DATABASE peoplehub TO peoplehub_app;
+GRANT USAGE ON SCHEMA public TO peoplehub_app;             -- what it may do to each table comes from the migrations
+```
+
+If the runtime role is missing, migration `V3` fails at once with `Runtime role "..." does not exist`, and nothing is
+half-applied. Tests and `spring-boot:test-run` provision the roles automatically (`src/test/resources/testcontainers/
+db-roles.sql`), and use the container's own superuser for both Flyway and the application, except in the tests that prove
+the privilege boundary.
+
+- **The role name is validated before it is used.** It is substituted into migration SQL, so
+  `RuntimeRolePlaceholderGuard` refuses to start the application unless `PEOPLEHUB_DB_RUNTIME_ROLE` matches
+  `[a-z_][a-z0-9_]{0,62}` (a plain lower-case identifier). The migration then re-checks it and quotes it as an identifier.
+- **Grants are per table, in the migration that creates the table.** There are no default privileges, so a new table
+  cannot give the runtime role `UPDATE` or `DELETE` by accident. `RuntimePrivilegesTest` lists every table and the exact
+  privileges the runtime role has; a change to either fails it until the test is changed on purpose.
+- **Residual risk:** Flyway runs inside the application, so the application's environment holds the owner credentials.
+  A stronger setup runs migrations as a separate job with the owner credentials (`SPRING_FLYWAY_ENABLED=false` on the
+  application). That is a deployment decision, tracked for `b0-7` and the hosting choice.
 
 Formatting is enforced by [Spotless](https://github.com/diffplug/spotless) with google-java-format in **AOSP** style
 (4-space indent, 100 columns). `./mvnw verify` fails on badly formatted code; run `./mvnw spotless:apply` to fix it.
@@ -100,6 +141,8 @@ src/main/java/com/peoplehub/            # package-by-feature; root package com.p
   common/logging/                       # actor id, request log, message-free stack traces
   common/observability/                 # Sentry PII scrubber
   common/scheduling/                    # ShedLock config, JobRunner (see "Scheduled jobs")
+  common/database/                      # runtime role name guard (see "Database roles")
+  audit/                                # append-only audit writer (see "Audit log")
 src/main/resources/
   application.yml                       # non-secret settings only
   application-local.yml                 # `local` profile: readable console, DEBUG (developer machines only)
@@ -236,6 +279,70 @@ public class ExampleJob {                        // non-final: ShedLock proxies 
 
 The pool size, lock and shutdown defaults are unconfirmed (`[confirm]`). The `shedlock` table deliberately uses plain
 UTC `timestamp` columns, the one exception to "`timestamptz` everywhere" (see the V2 header and CLAUDE.md §9).
+
+## Audit log
+
+`audit_log` (migration V3) is an **append-only** record of who did what (Spec 12, 15). Rows are only ever inserted.
+Nothing calls the writer yet: it needs a real organization id, and organizations arrive with B2.
+
+**Append-only is enforced twice, in the database.** The runtime role has no `UPDATE`, `DELETE` or `TRUNCATE` on the
+table, and a statement-level trigger (`ENABLE ALWAYS`, so it also holds under `session_replication_role = replica`)
+rejects all three for everyone, the table owner included. Accepted limit: a sufficiently privileged database owner or
+superuser can still disable or drop the trigger; b0-6 does not defend against a malicious database administrator.
+
+The runtime role may `SELECT` the table (a future Super Admin audit viewer reads it; there is no read endpoint yet) and
+`INSERT` only the eight columns the writer supplies. It cannot supply `id` or `occurred_at`, which the database
+generates (`occurred_at` is the database's `now()`, the transaction start time).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `BIGINT` identity (`ALWAYS`) | database-generated |
+| `organization_id` | `UUID NOT NULL` | no FK until B2; the nil UUID is rejected; never a placeholder |
+| `actor_id` | `VARCHAR(64) NOT NULL` | the `ActorId` contract: employee id, `anonymous`, `SYSTEM`, `job:<name>` |
+| `action` | `VARCHAR(64) NOT NULL` | `UPPER_SNAKE_CASE` |
+| `target_type`, `target_id` | `VARCHAR(64)` | type is `UPPER_SNAKE_CASE`; id is a token; an id needs a type |
+| `occurred_at` | `TIMESTAMPTZ NOT NULL` | `DEFAULT now()`, database time |
+| `ip` | `INET` | only when there is a request |
+| `correlation_id` | `VARCHAR(64)` | the `CorrelationId` contract |
+| `details` | `JSONB NOT NULL` | the structure below, at most 4096 bytes |
+
+### Writing an audit row
+
+```java
+@Transactional
+public void changeRole(UUID organizationId, String employeeId, String from, String to) {
+    // ... the change itself ...
+    auditWriter.append(
+            AuditEvent.builder(organizationId, "EMPLOYEE_ROLE_CHANGED")
+                    .target(AuditTarget.of("EMPLOYEE", employeeId))
+                    .details(AuditDetails.builder().change("role", from, to).changed("email").build())
+                    .build());
+}
+```
+
+- `AuditWriter.append` is the only operation. It joins the caller's transaction (`MANDATORY`): the audit row commits or
+  rolls back with the change it describes, and calling it without a transaction is an error.
+- The **actor** comes from `ActorId.current()` and the **correlation id** from `CorrelationId.current()`; the caller
+  cannot pass either. No actor in the context means no row.
+- The organization must be a **real** one from the authenticated principal: never null, never the nil UUID, never a
+  made-up value to satisfy `NOT NULL`. An event with no resolved organization (for example a failed login for an unknown
+  organization) does not belong in `audit_log`; it goes to security logging and rate-limit telemetry.
+- **`details`** is built only through `AuditDetails`, from scalars, never from an object, map or entity:
+
+  ```json
+  {"v":1,
+   "attributes":{"format":"CSV","rowCount":120},
+   "changes":[{"field":"role","before":"EMPLOYEE","after":"ADMIN"},{"field":"email"}]}
+  ```
+
+  Keys and field names are `[a-z][A-Za-z0-9_]{0,39}`. String values are **tokens** (`[A-Za-z0-9._:-]{1,64}`: ids and
+  codes, no spaces and no `@`, so no names or emails). At most 20 attributes and 20 changes. A name containing
+  `password`, `secret`, `token`, `otp`, `recovery`, `credential` or `apikey` cannot carry a value; use
+  `changed(field)`, which records that the field changed and nothing else. These limits are approved B0-6 defaults; a
+  change is an explicit contract change.
+- **Retention.** Immutable audit rows and the future retention/anonymization requirement (Spec 15) are in tension: the
+  trigger blocks everything, so a retention job will need a deliberate owner-level mechanism. Not designed yet; tracked
+  in CLAUDE.md.
 
 ## Git workflow (Spec 16.2)
 
