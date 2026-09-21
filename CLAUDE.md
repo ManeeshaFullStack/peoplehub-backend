@@ -99,8 +99,65 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   **unexposed until B2 auth exists**. Revisit with authentication, or on a separate management port.
 - **D8 — Graceful shutdown.** `server.shutdown=graceful`, `spring.lifecycle.timeout-per-shutdown-phase=30s`,
   overridable with `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE`. **`[confirm]`: 30s is an unconfirmed default**; flag it
-  as such in the PR description. Keep it below the orchestrator's stop grace period.
+  as such in the PR description. It applies to the web-server phase and, separately, to the scheduler phase, so shutdown
+  can take up to 65s: the orchestrator's stop grace period must be **90s or more** (see "B0-5 decisions" and §12).
 - **D9 — Docs.** README (logging & observability section) and `.env.example` are updated in the `b0-4` branch.
+
+### B0-5 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
+
+- **S1 — Lock store.** PostgreSQL via ShedLock's JDBC provider (`shedlock` table, migration V2). No Redis dependency for
+  scheduling: a Redis flush or outage cannot cause a double run or stall jobs.
+- **S2 — Column types.** Try `timestamptz` first and verify empirically; pre-approved fallback to ShedLock's plain
+  `timestamp` (UTC) if not deterministic across JVM/session zones, recorded as an explicit exception. **The fallback
+  was needed and is in place**: see the exception bullet in §9 (measured evidence, guard test). It is the only
+  exception to "`timestamptz` everywhere".
+- **S3 — Lock clock.** `usingDbTime()`: the database's clock is the shared clock, so instance clock skew cannot make
+  two instances believe they hold a lock.
+- **S4 — Actor id.** Job log lines and Sentry events carry `actorId=job:<name>` (a fresh `correlationId` per run).
+- **S5 — Catch-up.** No generic watermark/`job_run` table. Each job derives its work from persisted state and decides
+  "due" in the org timezone, with a documented pattern (`DailyCloseExample`) and a proof test **per job going forward**
+  (after simulated downtime the next run repairs the gap; a repeat run changes nothing).
+- **S6 — `JobRunner`.** Explicit `jobRunner.run("<name>", () -> …)` inside the `@Scheduled` method; no annotation or AOP
+  magic.
+- **S7 — Defaults, all env-overridable and `[confirm]` (unconfirmed, flag in the PR):** `lockAtMostFor` 10 minutes
+  (`PEOPLEHUB_SCHEDULING_DEFAULT_LOCK_AT_MOST_FOR`), scheduler pool size 4 (`SPRING_TASK_SCHEDULING_POOL_SIZE`), interrupted-job
+  unwind period 5s (`SPRING_TASK_SCHEDULING_SHUTDOWN_AWAIT_TERMINATION_PERIOD`, see below). The
+  30s job shutdown wait is the D8 lifecycle timeout (below), not a separate setting.
+- **Shutdown behaviour of jobs (measured; owner-approved Option A, with one measured amendment).**
+  `spring.task.scheduling.shutdown.await-termination` is **`false`**. A running job gets up to
+  `spring.lifecycle.timeout-per-shutdown-phase` (30s, D8) to finish; if it is still running then it is **interrupted**
+  and fails cleanly (one ERROR, lock released). Findings that must not be forgotten:
+  - `await-termination` and the lifecycle timeout are **alternatives, not additive**. With `await-termination=true`
+    Spring ignores the lifecycle timeout for jobs, waits only `await-termination-period`, then *abandons* a
+    still-running job: it keeps running while the DB pool closes under it and its lock is never released. Do not flip it
+    back. (An earlier draft of this repo's docs claimed the waits "add up"; that was wrong and was corrected before
+    merge.)
+  - **Amendment to "drop `await-termination-period` entirely":** it is kept at **`5s` `[confirm]`**. With `false`,
+    Spring interrupts the job but does not wait for it to unwind unless a period is set, so the DB pool can close
+    while the job is still releasing its lock; the unlock then fails and the lock stays held until `lockAtMostFor`
+    (10 minutes by default). Observed in a real log ("Unexpected error occurred in scheduled task" 14 ms after the pool
+    shut down) and made deterministic in `ScheduledJobInstancesTest` with a probe job that needs 1.5s to unwind:
+    period 5s passes, period 0 fails. This period is **unwind time for an interrupted job, not a second wait for the job
+    to finish.** 5s unwind period approved on 2026-09-21 as the current default; retain `[confirm]` for
+    production/configuration review (deployment-time confirmation of the configurable defaults is still wanted).
+  - Shutdown phases run **sequentially**: the web server (slow requests), then the scheduler (slow jobs), each with the
+    full timeout. Typical worst case is one timeout (30s); a slow request **and** a slow job together take up to two,
+    plus the unwind period: **65s true worst case** with the defaults (60s + 5s).
+  - Jobs must therefore be **interruptible and idempotent**: an interrupted job's work is picked up by the next run
+    (catch-up, S5).
+  - Proven by `ScheduledJobInstancesTest` (in-flight job finishes; an overrunning job is interrupted and its lock
+    released), each with negative controls (`await-termination=true` and period `0` both fail it).
+- **REQUIRED in `b0-7` (and wherever any orchestrator/Docker Compose config is ever added): stop grace period 90s.**
+  `terminationGracePeriodSeconds` (Kubernetes) / `stop_grace_period` (Docker Compose) / the equivalent must be set to
+  **90s or more**, comfortably above the 65s worst case (60s + 5s unwind), never left at the orchestrator's default (Docker Compose 10s,
+  Kubernetes 30s: both would kill the container mid-shutdown). If `spring.lifecycle.timeout-per-shutdown-phase` is
+  changed, the grace period must stay above twice it plus margin. Re-check this at the start of `b0-7` and again when
+  the production hosting decision (§19) is made; it is also recorded in §12.
+- **`shedlock.locked_by` holds the instance's hostname** (owner-approved, leave as is): a container id in production, a
+  machine name on a developer's machine. It never leaves the database and is not logged. No explicit instance id.
+- **Not in `b0-5`:** the real jobs (day split B4, accrual B9, comp-off expiry B10, retention B13), org settings (B2),
+  and Sentry alert *rules* (configured in Sentry, not in code; the code guarantees a failed job reaches Sentry tagged
+  with its job and correlation id).
 
 ## 3. Workflow — every task
 
@@ -160,7 +217,11 @@ shared/production infrastructure is involved; or a Git action needs approval.
   calendar ranges; 5–15 min TTL + explicit `@CacheEvict` on every write; keys namespaced `org:{orgId}:…`. **Never
   cache** open sessions, `attendance_day`, leave balances/ledger, the live dashboard, or anything mid-approval.
 - **Scheduled jobs:** `@Scheduled` + ShedLock, idempotent, catch-up after downtime, org-timezone day logic, failures
-  alert (never silent).
+  alert (never silent). **As built in `b0-5`** (`common/scheduling`, decisions S1–S7 in §2): a job is a non-final bean
+  with `@Scheduled` + `@SchedulerLock` whose body calls `jobRunner.run("<name>", …)` (name = lock name = actor
+  `job:<name>`); the job derives its work from persisted state and decides "due" in the org timezone, so a run after
+  downtime repairs the gap and a repeat run is a no-op; every job ships a proof test of that. No generic watermark
+  table. Failures are logged once at ERROR by `JobRunner` (that is the Sentry alert), never rethrown, never silent.
 - **Email:** always via the transactional **outbox**, committed in the same transaction as the business change (§9.2).
 - Lombok: `@Getter/@Setter/@Builder` on entities; **avoid `@Data` on JPA entities** (broken `equals/hashCode/toString`
   with lazy associations). `@Data`/records are fine for DTOs and value objects. The annotation-processor dependency
@@ -238,6 +299,13 @@ shared/production infrastructure is involved; or a Git action needs approval.
 - Schema follows §12; enforce invariants **in the database** (unique/partial-unique/exclusion/check constraints), not only
   in code. Key ones: one open session per employee, no overlapping sessions, `check_out_at > check_in_at`, unique
   `(device_id, seq)`, unique `(ref_type, ref_id, entry_type)` on the leave ledger.
+- **The one exception to "`timestamptz` everywhere": the `shedlock` table (V2)** uses plain `timestamp` holding UTC.
+  It is ShedLock's own table (nothing else reads or writes it) and this is deliberate: with the database clock,
+  ShedLock writes a `timestamp without time zone`, and a `timestamptz` column re-reads it in each connection's
+  session time zone, so instances in different zones disagree on lock expiry. Measured on real PostgreSQL: a live
+  lock stolen (double execution) or stuck for hours after a crash in 5 of 6 zone pairs; plain `timestamp` was correct
+  in all 6. `ShedLockTimeZoneTest` fails if the columns are ever changed. Do not "fix" it, and do not copy the
+  pattern to any business table. The `b0-6` runtime DB role needs `INSERT` and `UPDATE` on `shedlock`.
 - JPA Buddy output is a **draft only**; a human-reviewable migration is required before any commit (§21).
 - Hibernate `ddl-auto` is `validate` or `none` — never `update`/`create` outside throwaway tests. Flyway runs with
   `clean-disabled`, `validate-on-migrate`, no out-of-order, no baseline (set in `application.yml`; do not loosen).
@@ -276,6 +344,10 @@ SAST, dependency scan, secret scan, OpenAPI breaking-change check.
 
 - Dockerfile: multi-stage, JRE-only runtime, **non-root**, Actuator health check. Resource limits on every container.
 - Config is `.env`-driven: only `.env.example` (names, no real values) is committed; real `.env` stays git-ignored.
+- **Stop grace period must be 90s or more** (`terminationGracePeriodSeconds` / Compose `stop_grace_period` / the host's
+  equivalent), above the 65s worst-case shutdown (slow request then slow job, each up to the 30s lifecycle timeout, plus 5s unwind).
+  Never leave the orchestrator default (Compose 10s, Kubernetes 30s). **Check this when writing the Dockerfile, in
+  `b0-7`, and whenever production hosting is chosen.** Details: §2, "B0-5 decisions".
 - **Docker Compose location is an open conflict** between §16.4 (`peoplehub-infra`) and §17 B0 (`b0-7-docker-compose`,
   this repo). Do not start `b0-7` until the user has resolved it.
 
