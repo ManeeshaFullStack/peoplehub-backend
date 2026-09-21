@@ -6,8 +6,8 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 §22.1.
 
 > **Two different `D#` series exist.** The spec has decisions D1–D30 (its §0). This repository also records its own
-> implementation decisions as **"B0-4 decisions" D1–D9**, **"B0-5 decisions" S1–S7** and **"B0-6 decisions"
-> B0-6/1–B0-6/16** (all in §2 below). A `D#` in the B0-4 block, or next to logging/health/Sentry/shutdown topics (for
+> implementation decisions as **"B0-4 decisions" D1–D9**, **"B0-5 decisions" S1–S7**, **"B0-6 decisions"
+> B0-6/1–B0-6/16** and **"B0-7 decisions" B0-7/1–B0-7/13** (all in §2 below). A `D#` in the B0-4 block, or next to logging/health/Sentry/shutdown topics (for
 > example "the D8 lifecycle timeout"), is the repository's; a `D#` next to a `§` reference or a product rule (for
 > example D6 MFA, D7 tombstone, D8 email approvals, D9 no self-approval) is the spec's. The historical labels are
 > deliberately not renumbered (owner decision). When a reference could be ambiguous, write the context explicitly:
@@ -50,16 +50,16 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   is to be referenced.
 - Current status: **b0-1, b0-2 and b0-3 are merged; their code is in the baseline commit** (the individual merge
   commits no longer exist). **b0-4 is merged** (logging, request log, Sentry, health probes, graceful shutdown; PR #4).
-  **b0-5 is merged** (ShedLock scheduler, `JobRunner`, V2 lock table; PR #6). **b0-6
-  (`feature/b0-6-audit-log-append-only`: V3 `audit_log`, append-only trigger, two DB roles, `AuditWriter`) is implemented
-  on its branch and awaiting review; it is not merged.** **b0-7 (`b0-7-docker-compose`) is not started** and is deferred
-  (see §12). The master spec is **v9**; its own §16.5 checkpoint is stale for b0-4/b0-5 (see §15 item 10). Update this
-  line when a phase merges.
+  **b0-5 is merged** (ShedLock scheduler, `JobRunner`, V2 lock table; PR #6). **b0-6 is merged** (V3 `audit_log`,
+  append-only trigger, two DB roles, `AuditWriter`; PR #8). **b0-7
+  (`feature/b0-7-docker-compose`: `Dockerfile`, backend development `docker-compose.yml`, `docker/smoke.sh`, CI job
+  `compose-smoke`) is implemented on its branch and awaiting review; it is not merged.** The master spec is **v9**; its
+  own §16.5 checkpoint is stale for b0-4/b0-5/b0-6 (see §15 item 10). Update this line when a phase merges.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15 item 12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
-  closes (the OpenAPI check was deferred out of `b0-3` because there is no real API surface to compare yet); (4) the
-  Dockerfile as its own branch; (5) **`CODEOWNERS`** (repository governance): not created because the owner's GitHub
+  closes (the OpenAPI check was deferred out of `b0-3` because there is no real API surface to compare yet); (4) ~~the
+  Dockerfile as its own branch~~ (done inside `b0-7`, B0-7/2); (5) **`CODEOWNERS`** (repository governance): not created because the owner's GitHub
   handle has not been supplied (B0-6/10); (6) **audit retention/anonymization** (below); (7) the **Super Admin
   audit-log read endpoint** (`GET /admin/audit-log`, B0-6/4) with its authorization and tenant isolation, a later phase;
   (8) the **hosting decision on Flyway credentials** (see "B0-6 decisions", B0-6/3).
@@ -83,7 +83,9 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   the JVM's default zone offset (for example `+05:30` on a developer machine), not forced UTC. It is an unambiguous
   ISO-8601 instant, so nothing breaks, and a container's `TZ` will likely make it UTC and the question moot. Owner
   decision: do **not** add a custom formatter in `b0-4`; revisit when containerizing (`b0-7` / §16.4) and either
-  confirm the container runs in UTC or force UTC then.
+  confirm the container runs in UTC or force UTC then. **Resolved in `b0-7` (B0-7/5):** the image sets `ENV TZ=UTC`, and
+  `docker/smoke.sh` checks that the container's log timestamps are UTC (`Z`). Still no custom formatter; a JVM started
+  outside the image (for example `./mvnw spring-boot:run`) keeps the machine's zone.
 - **Open decision item (raised in `b0-4`): Sentry scrubber is a denylist by name for top-level fields.**
   `SentryEventScrubber` allowlists tags and contexts but clears the other data-carrying event fields by name, so a
   new top-level field added by a future SDK version would not be cleared automatically. Owner decision: leave as is
@@ -93,7 +95,8 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 - **Owner decisions (initialization):** Maven + Maven Wrapper (not Gradle). `PROJECT_MASTER_SPEC.md` stays in this
   repo for the current implementation phase (not moved to `peoplehub-docs`) and remains the source of truth.
   `.gitignore`, `CLAUDE.md`, `PROJECT_MASTER_SPEC.md`, `README.md` and `doc/` (when it exists) are tracked project
-  files and must **never** be added to `.gitignore`. `b0-7` is deferred (see §12); it does not block `b0-1`…`b0-6`.
+  files and must **never** be added to `.gitignore`. `b0-7` was deferred until the compose location was decided; the
+  owner chose Option C (B0-7/1) and it is now built.
   **Never invent or guess the owner's GitHub handle.** Do not create `CODEOWNERS` until the owner supplies the handle
   or a phase requires it (auth/migration/security paths, §16.2). Spec inconsistencies are recorded in §15 and flagged
   to the owner before the affected phase; the spec itself is not edited.
@@ -232,7 +235,9 @@ branches:
   **90s or more**, comfortably above the 65s worst case (60s + 5s unwind), never left at the orchestrator's default (Docker Compose 10s,
   Kubernetes 30s: both would kill the container mid-shutdown). If `spring.lifecycle.timeout-per-shutdown-phase` is
   changed, the grace period must stay above twice it plus margin. Re-check this at the start of `b0-7` and again when
-  the production hosting decision (§19) is made; it is also recorded in §12.
+  the production hosting decision (§19) is made; it is also recorded in §12. **Done for the development stack in
+  `b0-7`:** the backend service in `docker-compose.yml` has `stop_grace_period: 90s` (a literal), and `docker/smoke.sh`
+  fails if it is below 90s or below 2 x the lifecycle timeout + 5s + a 20s margin (B0-7/8).
 - **`shedlock.locked_by` holds the instance's hostname** (owner-approved, leave as is): a container id in production, a
   machine name on a developer's machine. It never leaves the database and is not logged. No explicit instance id.
 - **Not in `b0-5`:** the real jobs (day split B4, accrual B9, comp-off expiry B10, retention B13), org settings (B2),
@@ -265,9 +270,9 @@ Cite as "B0-6/4" and so on (never a bare `D#`, which is the spec's or B0-4's). C
   `src/test/resources/testcontainers/db-roles.sql`. Existing tests keep the container's superuser for both Flyway and the
   app (smallest change); only the privilege-boundary tests connect as the roles. Anything that starts its own
   PostgreSQL test container must use `TestcontainersConfiguration.newPostgresContainer()` (that is why
-  `ScheduledJobInstancesTest` changed). **Residual risk, tracked for `b0-7` and hosting (§19):** Flyway runs in the app
+  `ScheduledJobInstancesTest` changed). **Residual risk, tracked for the hosting decision (§19):** Flyway runs in the app
   process, so the app's environment holds the owner credentials; the stronger setup is a separate migration job with
-  `SPRING_FLYWAY_ENABLED=false` on the app. The V3 fail-fast check is approved: a missing runtime role fails the
+  `SPRING_FLYWAY_ENABLED=false` on the app. The `b0-7` development stack deliberately keeps in-app Flyway (B0-7/9). The V3 fail-fast check is approved: a missing runtime role fails the
   migration with a readable message and rolls it back.
 - **B0-6/4 — Runtime may `SELECT` and `INSERT`.** v9 says the audit table is "write-only for the app" (spec §15
   security checklist, item 13; not this file's §15), but it also requires a future Super Admin audit-log viewer, so
@@ -322,6 +327,76 @@ Cite as "B0-6/4" and so on (never a bare `D#`, which is the spec's or B0-4's). C
   for an unknown organization) cannot be inserted into tenant-scoped `audit_log`; do not fabricate a tenant. It belongs
   in security logging and rate-limit telemetry until a future, explicitly designed model says otherwise (also what
   v9's non-enumeration rule wants).
+
+### B0-7 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
+
+Cite as "B0-7/3" and so on. Files: `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `docker/postgres/init/01-roles.sh`,
+`docker/smoke.sh`, CI job `compose-smoke`. All verified with `docker/smoke.sh` (71 checks) and mutation-tested (see
+B0-7/12).
+
+- **B0-7/1 — Compose location: Option C.** `docker-compose.yml` in this repository is the **backend development
+  compose** (backend, PostgreSQL, Redis, Mailpit). **No frontend service**: the frontend does not exist until F0. The
+  **complete platform compose moves to infrastructure ownership (`peoplehub-infra`) when the frontend exists.** The
+  compose project is named `peoplehub-backend-dev` so it can never collide with a future platform project
+  (`peoplehub`). This resolves §15 item 1. Spec §16.4 and §17 still describe the other split; correcting that text is a
+  spec PR the owner decides on (this file does not edit the spec).
+- **B0-7/2 — Dockerfile inside `b0-7`** (supersedes the earlier "separate branch" follow-up, §15 item 4).
+- **B0-7/3 — Services: `db` (PostgreSQL 17, same tag as the tests), `redis` (7), `backend`, `mailpit`.** Mailpit, not
+  Mailhog (unmaintained). Nothing sends mail until B1; the backend will reach it as `mailpit:1025`.
+- **B0-7/4 — Base images: `eclipse-temurin:21-jdk-noble` (build) and `21-jre-noble` (runtime), glibc, chosen over
+  Alpine for reliability, not size** (measured: TLS and the hardened prototype were equal on both; the deciding factors
+  were later native-code libraries such as password hashing, and Apache POI fonts). All images are pinned by digest.
+  **There is no Dependabot configuration in the repository, so nothing updates those digests: bump them on purpose**
+  (adding Dependabot for the `docker`, `github-actions` and `maven` ecosystems is a tracked follow-up, not part of
+  `b0-7`).
+- **B0-7/5 — `ENV TZ=UTC` in the runtime image** (closes the B0-4 log-timestamp item, see §2).
+- **B0-7/6 — Hardening on every container: `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, a non-root user, and
+  memory/CPU/pids limits.** Writable exceptions, all small `tmpfs` mounts: `/tmp` on all four services (the JVM and
+  Tomcat, PostgreSQL, Redis and Mailpit's message store need scratch space; `noexec` works) and `/var/run/postgresql`
+  for the PostgreSQL socket. PostgreSQL and Redis run as their images' own users (`70:70` on Alpine, `999:1000`), so no
+  capability is needed. Approved limits (development defaults): backend 768m / 1.5 CPU / 300 pids, db 512m / 1 CPU,
+  redis 256m / 0.5 CPU, mailpit 128m / 0.25 CPU.
+- **B0-7/7 — Redis: AOF persistence on a named volume, a required password, no `maxmemory` and no eviction** (evicting a
+  refresh-token family or a rate-limit bucket would be a bug; the container limit is the guard).
+- **B0-7/8 — Backend `stop_grace_period: 90s`, a literal** (not a variable, so it cannot be set too low by accident).
+  `docker/smoke.sh` fails if it is below 90s or below 2 x `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` + 5s + a 20s
+  margin. Measured: `docker compose stop backend` logs "Graceful shutdown complete" and the JVM exits 143 (normal).
+  Re-check at the production hosting decision (§19).
+- **B0-7/9 — Role bootstrap.** `docker/postgres/init/01-roles.sh` runs once, on an empty data directory, as the
+  bootstrap superuser, which exists only inside the `db` container (default name `pgbootstrap`: **PostgreSQL rejects a
+  superuser or role named `pg_…`**). It creates the owner and runtime roles (names validated against
+  `[a-z_][a-z0-9_]{0,62}`, not `pg_`-prefixed, and different), makes the owner the **database owner** (so it can run the
+  migrations and create the trusted `btree_gist` extension without being a superuser), and grants the runtime role
+  `CONNECT` and schema `USAGE`. Names and passwords reach SQL only as psql variables (`:"ident"`, `:'literal'`). It does
+  **not** run again on an existing volume; change a role later with `ALTER ROLE` or `down -v`. In-app Flyway with the owner
+  credentials in the backend's environment is kept for development (B0-6/3 residual risk).
+- **B0-7/10 — Environment and secrets.** `.env` is git-ignored; `.env.example` holds names only. The four secrets
+  (`POSTGRES_BOOTSTRAP_PASSWORD`, `PEOPLEHUB_DB_OWNER_PASSWORD`, `PEOPLEHUB_DB_RUNTIME_PASSWORD`, `REDIS_PASSWORD`) have
+  **no defaults** and use `${VAR:?}`, so a missing one stops Compose before anything starts; `.env.example` ships them
+  blank. Only explicitly listed variables are forwarded to the backend (an empty forwarded value would override the
+  app's default with a blank). `SPRING_PROFILES_ACTIVE` is never set (the `local` profile must not run in a container).
+  Environment variables are visible in `docker inspect`: acceptable for development only.
+- **B0-7/11 — Ports, network, volumes.** Only the backend (`127.0.0.1:8080`) and Mailpit's UI (`127.0.0.1:18025`) are
+  published, on loopback; ports are configurable with `PEOPLEHUB_BACKEND_PORT` and `PEOPLEHUB_MAILPIT_UI_PORT`. **The
+  owner's machine already uses 5432, 1025 and 8025 for unrelated containers (`assessment-platform-*`): never stop or
+  modify them, and never publish those ports.** PostgreSQL and Redis are not published (use a git-ignored
+  `docker-compose.override.yml`). One project-scoped network; named volumes `pgdata` and `redisdata` (no bind mounts).
+  Mailpit keeps no volume by design.
+- **B0-7/12 — CI smoke, not required.** CI job `compose-smoke` runs `docker/smoke.sh` (bash; Git Bash locally). It is
+  **not** a required check yet (a GitHub setting the owner applies). The script is hermetic (own project `peoplehub-smoke`,
+  own ports, generated throwaway secrets, torn down even on failure) and checks the image, health and readiness, the
+  RFC 9457 shape, Flyway-as-owner vs application-as-runtime-role, that the runtime role cannot UPDATE/DELETE/TRUNCATE the
+  audit log and the owner is stopped by the trigger, hardening/limits/ports on all four services, restart on an existing
+  volume (the role script must not run again) and graceful shutdown. It was mutation-tested: breaking the grace period,
+  Redis capabilities, a published DB port and the application's role produced exactly those four failures. The script
+  also fails in CI if `01-roles.sh` is committed without the executable bit.
+- **B0-7/13 — Other approved choices.** Fat jar (layered extraction is a later optimisation). Bash smoke script.
+  `restart: "no"` (a crash-looping dev backend should be seen). Applied without an explicit answer, following the plan: no
+  Dependabot in `b0-7`, blank secrets in `.env.example`, and the timing of the spec-text PR stays open.
+- **Not proven by `b0-7` (do not claim otherwise):** shutdown *under load* (in-flight request draining is proven by
+  `GracefulShutdownTest`, b0-4; the jar has no slow endpoint), and the B0 exit criterion "a deliberately bad request
+  returns a field-level RFC 7807 error", which the running stack cannot show without a write endpoint (proven by
+  `@ApiWebTest` tests until B2). The CI job can only be confirmed green after a push.
 
 ## 3. Workflow — every task
 
@@ -548,8 +623,15 @@ SAST, dependency scan, secret scan, OpenAPI breaking-change check.
   Never leave the orchestrator default (Compose 10s, Kubernetes 30s). **Check this when writing the Dockerfile, in
   `b0-7`, and whenever production hosting is chosen.** Details: §2, "B0-5 decisions". Spec v9 §16.5 requires the same
   of `b0-7` ("orchestrator shutdown grace/budget consistent with the b0-4/b0-5 worst case").
-- **Docker Compose location is an open conflict** between §16.4 (`peoplehub-infra`) and §17 B0 (`b0-7-docker-compose`,
-  this repo). Do not start `b0-7` until the user has resolved it.
+- **As built in `b0-7`** (decisions B0-7/1–B0-7/13 in §2): the `Dockerfile` (multi-stage, Temurin 21 noble, non-root
+  uid 10001, `TZ=UTC`, liveness `HEALTHCHECK`, base images pinned by digest) and the **backend development
+  `docker-compose.yml`** (backend, PostgreSQL, Redis, Mailpit; hardened, limited, loopback ports, 90s stop grace). Verify
+  any change to either with `bash docker/smoke.sh`. Keep the compose image tags equal to `TestcontainersConfiguration`
+  (the smoke script checks it). Never publish host ports 5432, 1025 or 8025, and never touch the owner's unrelated
+  containers (§14).
+- **Docker Compose location: resolved by the owner (Option C, B0-7/1).** This repository holds the backend
+  development compose; the complete platform compose (with the frontend) moves to infrastructure ownership
+  (`peoplehub-infra`) when the frontend exists. Do not add a frontend service here.
 
 ## 13. Build order (backend track, §17)
 
@@ -573,10 +655,13 @@ policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-sch
   `b0-7-docker-compose` (each prefixed with a `<type>/`).
 - **B0 exit criteria:** CI green; sample migration; OpenAPI published; audit table rejects UPDATE/DELETE;
   `docker compose up` boots the stack; a deliberately bad request returns a field-level RFC 7807 error.
-- **B0 progress:** `b0-1` … `b0-5` merged; `b0-6` implemented on its branch, awaiting review (not merged); `b0-7` not
-  started. v9 (§16.5) says to continue from this actual state and not to rebuild merged work; `b0-7` remains deferred
-  (§12, §15 item 1). The B0 exit criterion "audit table rejects UPDATE/DELETE" is demonstrated by
-  `AuditLogMigrationTest.auditTableRejectsUpdateAndDelete`.
+- **B0 progress:** `b0-1` … `b0-6` merged; `b0-7` implemented on its branch, awaiting review (not merged). v9 (§16.5)
+  says to continue from this actual state and not to rebuild merged work. The B0 exit criterion "audit table rejects
+  UPDATE/DELETE" is demonstrated by `AuditLogMigrationTest.auditTableRejectsUpdateAndDelete` (and again, through the
+  running stack, by `docker/smoke.sh`); "`docker compose up` boots the stack" by `docker/smoke.sh`. **Still needing final
+  B0 verification after `b0-7`:** the field-level RFC 7807 error (test-level only until B2), "OpenAPI published" (the
+  snapshot and breaking-change check is a queued follow-up), and the other queued items before B0 closes (migration-edit
+  CI guard, SAST, dependency scan, SBOM, gitleaks pre-commit hook, Dependabot).
 
 ## 14. Local environment notes
 
@@ -609,7 +694,8 @@ resolves **none** of them, so all nine remain open or as recorded owner decision
 
 - **1, 4, 5** (compose location, B0 scope items with no branch, compose-for-Testcontainers): v9 §16.4 and the §17 B0 row
   are unchanged. v9 §16.5 now lists `b0-7` as "not started, implement docker-compose", but says nothing about *where*
-  the compose file lives, so it does not resolve #1; `b0-7` stays deferred.
+  the compose file lives, so it does not resolve #1. **Since resolved by the owner (B0-7/1, Option C):** #1 and #4 are
+  settled as recorded in the table below; #5 stands (CI does not use compose for Testcontainers).
 - **2** (`approver_id` vs `resolved_approver_id`): unchanged (§12 vs §7.5). Still ask before B7.
 - **3** (§2 cross-refs to 13.1/13.2): unchanged in v9's §2 table. Still cosmetic; use §13.2 / §13.3.
 - **6, 7, 8** (page-size cap, RFC 7807 wording and `your-domain`, `b0-4` naming): unchanged; the recorded `b0-3` owner
@@ -621,11 +707,11 @@ Rows 10–13 are new inconsistencies **inside v9 itself** (or between v9 and the
 
 | # | Issue | Resolve before | Working assumption until resolved |
 |---|-------|----------------|-----------------------------------|
-| 1 | `docker-compose.yml` location: §16.4 says `peoplehub-infra`; §17 B0 says this repo (`b0-7`) and includes a frontend container that doesn't exist until F0 | `b0-7` | **Deferred.** Do not start `b0-7`. |
+| 1 | `docker-compose.yml` location: §16.4 says `peoplehub-infra`; §17 B0 says this repo (`b0-7`) and includes a frontend container that doesn't exist until F0 | `b0-7` | **Resolved by the owner (B0-7/1, Option C):** this repo holds the *backend development* compose (backend, PostgreSQL, Redis, Mailpit; no frontend); the *complete platform* compose moves to `peoplehub-infra` when the frontend exists. The spec text (§16.4, §17) still describes the other split; aligning it is a spec PR for the owner to decide. |
 | 2 | `approval_request` column is `approver_id` in §12 but `resolved_approver_id` in §7.5 | B7 | Ask before creating the table. |
 | 3 | §2 cross-refs are stale: validation is §13.2 (cited as 13.1), caching is §13.3 (cited as 13.2) | next spec PR | Cosmetic; use §13.2 / §13.3. |
-| 4 | §17 B0 scope items with no branch: Redis, injectable clock, Dockerfile (16.4 puts the Dockerfile in this repo) | assigned per branch plan | Clock → `b0-1` (done); Redis → `b0-2` (done); Dockerfile → separate branch, not gated on the compose decision. |
-| 5 | §16.4 says the compose file is what CI uses for Testcontainers; Testcontainers manages its own containers and does not consume compose | `b0-2` | Testcontainers is self-contained; CI does not depend on compose. |
+| 4 | §17 B0 scope items with no branch: Redis, injectable clock, Dockerfile (16.4 puts the Dockerfile in this repo) | assigned per branch plan | Clock → `b0-1` (done); Redis → `b0-2` (done); Dockerfile → built inside `b0-7` (owner decision B0-7/2, superseding "separate branch"). |
+| 5 | §16.4 says the compose file is what CI uses for Testcontainers; Testcontainers manages its own containers and does not consume compose | `b0-2` | Testcontainers is self-contained; CI does not depend on compose for tests. (`b0-7` adds a *separate* `compose-smoke` job that boots the development stack; it is not the integration-test setup and is not a required check.) |
 | 6 | §13.1 gives `size` a max of 100 but does not say what happens above it | decided in `b0-3` (owner approved) | `size` > 100 is a 400 (`invalid-page-request`) that points to the export; no silent clamp. |
 | 7 | §13 says "RFC 7807"; RFC 9457 obsoletes it with the same shape. §9.2 still has the `your-domain` placeholder, so no real base URL exists for problem `type` | decided in `b0-3` (owner approved) | Cite RFC 9457; `type` and `instance` are URNs (`urn:peoplehub:problem:*`, `urn:peoplehub:request:*`). |
 | 8 | §17 names `b0-4` "logging-validation-observability", but the RFC 7807 error body needs a correlation id and the validation `@ControllerAdvice`, both required by `b0-3`'s pagination errors | decided in `b0-3` (owner approved) | Correlation-id filter and `GlobalExceptionHandler` live in `b0-3`; `b0-4` adds JSON logging, actor id, request log, Sentry, actuator on top. |

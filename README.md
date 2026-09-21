@@ -7,18 +7,19 @@ organization is a completely private workspace; that tenant model is **not imple
 - **Source of truth:** [`PROJECT_MASTER_SPEC.md`](PROJECT_MASTER_SPEC.md) (v9). Scope changes update the spec first,
   through a branch and pull request.
 - **Engineering rules:** [`CLAUDE.md`](CLAUDE.md) (workflow, architecture, security, testing, known spec issues).
-- **Status:** Phase B0 (Foundation): `b0-1` to `b0-5` are merged; `b0-6` (append-only audit log) is implemented on
-  its branch and awaiting review; `b0-7` (docker-compose) is not started. The app is a runnable foundation with no
-  business endpoints yet.
+- **Status:** Phase B0 (Foundation): `b0-1` to `b0-6` are merged; `b0-7` (Dockerfile and the backend development
+  compose) is implemented on its branch and awaiting review. The app is a runnable foundation with no business
+  endpoints yet.
 
 ## Scope: implemented now vs specified for later
 
-**Implemented (b0-1 to b0-6):** build and CI (tests, Spotless, secret scan); PostgreSQL with Flyway migrations and Redis;
-the API standards (`/api/v1` base path, pagination and sort envelope, one RFC 9457 problem-error shape, correlation
-ids, OpenAPI via springdoc); structured JSON logging with a request log; Sentry with PII scrubbing (off unless a DSN
-is set); Actuator health and readiness probes; graceful shutdown; a scheduler (`@Scheduled` guarded by ShedLock, with
-`JobRunner`); and an append-only audit log with separate database roles for migrations and for the running
-application. Sections below describe these.
+**Implemented (b0-1 to b0-7):** build and CI (tests, Spotless, secret scan, a compose smoke test); PostgreSQL with Flyway
+migrations and Redis; the API standards (`/api/v1` base path, pagination and sort envelope, one RFC 9457 problem-error
+shape, correlation ids, OpenAPI via springdoc); structured JSON logging with a request log; Sentry with PII scrubbing
+(off unless a DSN is set); Actuator health and readiness probes; graceful shutdown; a scheduler (`@Scheduled` guarded by
+ShedLock, with `JobRunner`); an append-only audit log with separate database roles for migrations and for the running
+application; and a hardened container image with a backend development stack (`docker compose`). Sections below describe
+these.
 
 **Specified by v9 but not implemented (future phases, mainly B2, F1 and security work):** multi-organization SaaS with
 hard tenant isolation (`organization_id` is the tenant boundary, and no tenant can discover another); founder-only
@@ -50,6 +51,8 @@ limiting, reports and so on) as the build order (Section 17) reaches them.
 | Auto-fix formatting | `./mvnw spotless:apply` |
 | Check formatting only | `./mvnw spotless:check` |
 | **Run the app locally** (throwaway Postgres + Redis containers, no setup) | `./mvnw spring-boot:test-run` |
+| Run the containerised stack (needs `.env`, see "Docker") | `docker compose up --build --wait` |
+| Verify that stack end to end (own project, own ports; what CI's `compose-smoke` runs) | `bash docker/smoke.sh` |
 | Run against your own Postgres/Redis (needs the environment below) | `./mvnw spring-boot:run` |
 | Run the packaged jar (needs the environment below) | `java -jar target/peoplehub-backend-0.1.0-SNAPSHOT.jar` |
 
@@ -104,7 +107,8 @@ the privilege boundary.
   privileges the runtime role has; a change to either fails it until the test is changed on purpose.
 - **Residual risk:** Flyway runs inside the application, so the application's environment holds the owner credentials.
   A stronger setup runs migrations as a separate job with the owner credentials (`SPRING_FLYWAY_ENABLED=false` on the
-  application). That is a deployment decision, tracked for `b0-7` and the hosting choice.
+  application). The development stack (see "Docker") does the same, deliberately; separating them is a deployment
+  decision, tracked for the hosting choice.
 
 Formatting is enforced by [Spotless](https://github.com/diffplug/spotless) with google-java-format in **AOSP** style
 (4-space indent, 100 columns). `./mvnw verify` fails on badly formatted code; run `./mvnw spotless:apply` to fix it.
@@ -126,6 +130,57 @@ Do not disable certificate checking.
 If tests fail while starting containers, check that Docker Desktop is running (`docker info`). The first run downloads
 the `postgres:17-alpine` and `redis:7-alpine` images, which can take a minute. Testcontainers removes its containers when
 the run ends, even if the process is killed.
+
+## Docker
+
+Two things live here (Spec 16.4, D16): the backend **image** (`Dockerfile`) and the backend **development stack**
+(`docker-compose.yml`): the backend, PostgreSQL, Redis and [Mailpit](https://mailpit.axllent.org/) (a dev-only mail
+catcher for the outbox emails that arrive in B1). There is **no frontend service**: the frontend does not exist until F0.
+The complete platform compose, with the frontend, moves to infrastructure ownership (`peoplehub-infra`) when it does; this
+file stays the backend-scoped stack, and its project name (`peoplehub-backend-dev`) cannot collide with that one.
+
+```bash
+cp .env.example .env         # then set the four secrets in the "Docker Compose" section: they have no defaults
+docker compose up --build --wait
+curl http://127.0.0.1:8080/actuator/health/readiness     # {"status":"UP"}
+docker compose down          # keeps the data; add -v to delete it
+```
+
+The backend is on `http://127.0.0.1:8080` and Mailpit's web UI on `http://127.0.0.1:18025` (both bound to loopback; change
+the ports with `PEOPLEHUB_BACKEND_PORT` and `PEOPLEHUB_MAILPIT_UI_PORT`). PostgreSQL and Redis are **not** published; to
+reach them from the host, add a git-ignored `docker-compose.override.yml`.
+
+**The image.** Multi-stage: a JDK 21 stage builds the jar, a JRE-only stage runs it, as a numeric non-root user (`10001`),
+in UTC (`TZ=UTC`, so log timestamps are UTC wherever it runs), with an Actuator liveness health check. The base is
+Temurin on Ubuntu noble (glibc), chosen over Alpine for reliability, not size: later phases add native-code libraries and
+Apache POI needs fonts. Base images are pinned by digest for reproducibility. **Nothing updates those digests
+automatically** (there is no Dependabot configuration yet): bump them on purpose and rebuild.
+
+**What every container has.** A read-only root filesystem, no Linux capabilities, `no-new-privileges`, a non-root user, and
+CPU/memory limits. The only writable places are small `tmpfs` mounts: `/tmp` (the JVM, Tomcat, PostgreSQL and Mailpit need
+scratch space; `noexec` works) and PostgreSQL's socket directory.
+
+**Roles and secrets.** On the first start (an empty volume) `docker/postgres/init/01-roles.sh` creates the owner and
+runtime roles (Flyway never creates roles, see "Database roles"). The bootstrap superuser exists only inside the database
+container. The four secrets have no defaults; `${VAR:?}` makes Compose refuse to start without them. They are ordinary
+environment variables, so `docker inspect` shows them: fine for development, not for production (hosting is an open item,
+Spec 19). The roles are created once: to change one later use `ALTER ROLE`, or `docker compose down -v` to start over.
+
+**Shutdown.** The backend's `stop_grace_period` is a fixed **90s**: shutdown runs the web-server phase and then the
+scheduler phase, each up to `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` (30s), plus a 5s unwind period, so 65s in the
+worst case, and Docker's default of 10s would kill it mid-shutdown. If you raise the timeout, raise the grace period
+(the smoke test fails when it is below 2 x the timeout + 5s + a margin). The JVM exits with code 143 on SIGTERM; that is
+normal.
+
+**Verifying it.** `bash docker/smoke.sh` builds the image, starts the stack from empty volumes with random throwaway
+secrets, and checks: health and readiness, the RFC 9457 error shape, that Flyway ran as the owner role while the
+application runs as the runtime role and **cannot update, delete or truncate the audit log**, hardening and limits on all four
+containers, loopback-only ports, a restart on the existing volumes, and a graceful shutdown inside the grace period. It uses
+its own project (`peoplehub-smoke`), volumes and ports, so it never touches your dev stack. CI runs it as the
+`compose-smoke` job, which is **not** a required check yet. Set `SMOKE_KEEP=1` to leave the stack running afterwards.
+
+Not covered here: a real "under load" shutdown (in-flight request draining is proven by `GracefulShutdownTest`), and the
+field-level validation error of the B0 exit criteria, which needs a write endpoint (proven by tests until B2).
 
 ## Project layout
 
@@ -153,7 +208,10 @@ src/test/java/com/peoplehub/
   common/api/testsupport/               # test-only sample endpoints (profile "api-test")
   db/, redis/, common/                  # tests
 .env.example                            # environment variable names (no values)
-.github/                                # CI workflow, Dependabot, pull request template
+Dockerfile, .dockerignore               # the backend image (see "Docker")
+docker-compose.yml                      # the backend development stack
+docker/                                 # postgres/init/01-roles.sh (role bootstrap), smoke.sh (stack verification)
+.github/                                # CI workflow (build, secret scan, compose smoke)
 ```
 
 Two test styles: `@ApiWebTest` is a fast web-layer slice (no Docker) for controller, error and pagination
