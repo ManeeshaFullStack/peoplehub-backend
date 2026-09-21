@@ -21,6 +21,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <springdoc.version>3.1.1</springdoc.version>
         <sentry.version>8.57.0</sentry.version>
+        <shedlock.version>7.10.1</shedlock.version>
         <spotless.version>3.10.2</spotless.version>
         <google-java-format.version>1.36.1</google-java-format.version>
     </properties>
@@ -85,6 +86,20 @@
             <groupId>io.sentry</groupId>
             <artifactId>sentry-logback</artifactId>
             <version>${sentry.version}</version>
+        </dependency>
+
+        <!-- Scheduled jobs (Spec 2, 14.3): @Scheduled guarded by ShedLock so a job runs on one instance at a time.
+             The lock store is PostgreSQL (JDBC). ShedLock is not managed by the Boot BOM, so its version is pinned
+             here (one property for both artifacts so they cannot drift apart); Dependabot tracks it. -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-jdbc-template</artifactId>
+            <version>${shedlock.version}</version>
         </dependency>
 
         <dependency>

@@ -81,6 +81,7 @@ src/main/java/com/peoplehub/            # package-by-feature; root package com.p
     openapi/                            # springdoc configuration
   common/logging/                       # actor id, request log, message-free stack traces
   common/observability/                 # Sentry PII scrubber
+  common/scheduling/                    # ShedLock config, JobRunner (see "Scheduled jobs")
 src/main/resources/
   application.yml                       # non-secret settings only
   application-local.yml                 # `local` profile: readable console, DEBUG (developer machines only)
@@ -168,10 +169,54 @@ not restart it. (Spec 16.4 names `/actuator/health` for liveness; this is a reco
 Health checks are not written to the request log. Metrics are collected but not exposed yet.
 
 **Graceful shutdown** is on: in-flight requests get up to `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` (default `30s`,
-**unconfirmed**) to finish. Keep it below the orchestrator's stop grace period.
+**unconfirmed**) to finish. Running jobs get the same timeout in a separate, later phase, so the orchestrator's stop
+grace period must be **90s or more**, not merely above this value (see "Scheduled jobs" below for why).
 
 **Sentry** is off unless `SENTRY_DSN` is set (also `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`). No tracing, no breadcrumbs.
 Only `correlationId` and `actorId` tags, the exception type and frames and the log message template are sent.
+
+## Scheduled jobs
+
+Jobs use Spring's `@Scheduled` guarded by [ShedLock](https://github.com/lukas-krecan/ShedLock), so a job runs on one
+instance at a time however many are started. The lock lives in PostgreSQL (`shedlock` table, migration V2) and uses the
+database's clock. A job looks like this:
+
+```java
+@Component
+public class ExampleJob {                        // non-final: ShedLock proxies the bean
+
+    @Scheduled(fixedDelayString = "PT1M")
+    @SchedulerLock(name = "example", lockAtMostFor = "PT5M", lockAtLeastFor = "PT10S")
+    public void run() {
+        jobRunner.run("example", this::doWork);  // same name as the lock
+    }
+}
+```
+
+- **`JobRunner`** gives every run a fresh correlation id and the actor `job:<name>` in the logs, writes one start and one
+  finish line with the duration, and logs a failure **once at ERROR** (that is what reaches Sentry, tagged with the job
+  and correlation id). It does not rethrow, so one bad run never stops the schedule.
+- **Idempotent and catch-up.** A job does not count on running once a day. It reads what is already done from the
+  database and does everything that is due and missing, so after downtime the next run repairs the gap and running
+  twice does no harm. There is no shared watermark table: each job derives its work from its own data. Every job ships a
+  test proving it (see `DailyCloseExample` and `CatchUpPatternTest` for the shape).
+- **Org timezone.** "Due" is decided in the organisation's timezone, inside the job. Schedule frequently and compute the
+  day boundary from data; do not hard-code a cron zone.
+- **`lockAtMostFor`** must be longer than the job can take: it is what frees the lock if an instance dies mid-run. The
+  default when a job does not set one is `PEOPLEHUB_SCHEDULING_DEFAULT_LOCK_AT_MOST_FOR` (10 minutes).
+- **Shutdown.** A running job gets up to `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` (30s by default, the same setting
+  the web server uses) to finish; if it is still running then, it is **interrupted** and fails cleanly (logged and sent
+  to Sentry like any failure), so write jobs to be interruptible and idempotent. Things that are easy to get wrong:
+  `SPRING_TASK_SCHEDULING_SHUTDOWN_AWAIT_TERMINATION` must stay `false` (with `true` Spring ignores that timeout for
+  jobs and abandons a still-running one while the database closes underneath it);
+  `SPRING_TASK_SCHEDULING_SHUTDOWN_AWAIT_TERMINATION_PERIOD` (5s) is not a second wait for the job to finish but the
+  time an *interrupted* job gets to unwind and release its lock before the database closes (set it to 0 and the lock
+  can stay held until `lockAtMostFor`); and the web server and the scheduler stop **one after another**: a single slow
+  request, or a single slow job, is bounded by its own 30s, but both together can take up to twice the timeout plus that
+  period (**65s** by default). The orchestrator's stop grace period must therefore be **90s or more**.
+
+The pool size, lock and shutdown defaults are unconfirmed (`[confirm]`). The `shedlock` table deliberately uses plain
+UTC `timestamp` columns, the one exception to "`timestamptz` everywhere" (see the V2 header and CLAUDE.md §9).
 
 ## Git workflow (Spec 16.2)
 

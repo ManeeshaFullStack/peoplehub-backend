@@ -31,9 +31,37 @@ spring:
 
   lifecycle:
     # [confirm] The spec gives no number: 30s is a default, not an approved value. Override per
-    # environment with SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE. Keep it below the orchestrator's
-    # stop grace period, or the container is killed mid-request anyway.
+    # environment with SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE. Each shutdown phase (web server,
+    # then scheduler) gets this long, so shutdown can take up to twice it plus the 5s job unwind
+    # period below (65s). The orchestrator's stop grace period must be 90s or more, not just above
+    # this value, or the container is killed mid-shutdown (CLAUDE.md, B0-5 decisions).
     timeout-per-shutdown-phase: 30s
+
+  task:
+    scheduling:
+      thread-name-prefix: scheduler-
+      pool:
+        # [confirm] Spring's default is 1 thread, so one slow job would delay every other job. 4 is a
+        # default, not an approved value. Override with SPRING_TASK_SCHEDULING_POOL_SIZE.
+        size: 4
+      shutdown:
+        # A running job gets up to spring.lifecycle.timeout-per-shutdown-phase (30s, above) to finish
+        # on shutdown; if it is still running then it is INTERRUPTED and fails cleanly (Spec 16.4).
+        # Measured, not assumed (ScheduledJobInstancesTest):
+        #  - await-termination must stay false. With true, Spring ignores that timeout for jobs, waits
+        #    only for await-termination-period, then ABANDONS a still-running job: it keeps running
+        #    while the database pool closes underneath it and its lock is never released.
+        #  - With false, Spring interrupts the job but does NOT wait for it to unwind unless a period
+        #    is set: the pool then closes while the job is still releasing its lock, the unlock fails
+        #    and the lock stays held until lockAtMostFor. The short period below is that unwinding
+        #    time, not a second wait for the job to finish. [confirm]
+        #  - Shutdown phases run one after another: the web server (slow requests) and then the
+        #    scheduler (slow jobs) each get the full timeout. A single slow request, or a single slow
+        #    job, is bounded by its own 30s; a slow request AND a slow job together take up to two
+        #    (60s), plus this period: 65s. The orchestrator's stop grace period must be 90s or more
+        #    (CLAUDE.md, B0-5 decisions).
+        await-termination: false
+        await-termination-period: 5s
 
 server:
   # Finish in-flight requests (and, later, scheduled jobs) before the container stops (Spec 16.4).
@@ -83,6 +111,14 @@ logging:
     # exception still propagates and is logged by GlobalExceptionHandler without its message. This
     # is Hibernate 7's category for it; DatabaseErrorLoggingTest fails if that name changes.
     org.hibernate.orm.jdbc.error: "OFF"
+
+peoplehub:
+  scheduling:
+    # [confirm] How long a job's lock is held if the instance running it dies without releasing it,
+    # unless the job's @SchedulerLock says otherwise (ISO-8601). It must exceed the longest run of
+    # any job using the default; the spec gives no number, so 10 minutes is a default, not an
+    # approved value. Override with PEOPLEHUB_SCHEDULING_DEFAULT_LOCK_AT_MOST_FOR.
+    default-lock-at-most-for: PT10M
 
 sentry:
   # SENTRY_DSN, SENTRY_ENVIRONMENT and SENTRY_RELEASE come from the environment (see .env.example).
