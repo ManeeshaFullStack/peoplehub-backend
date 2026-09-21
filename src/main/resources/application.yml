@@ -23,6 +23,14 @@ spring:
     validate-on-migrate: true
     out-of-order: false
     baseline-on-migrate: false
+    # Migrations run as the migration/owner role, the application as the least-privileged runtime role: set
+    # SPRING_FLYWAY_USER / SPRING_FLYWAY_PASSWORD (and SPRING_FLYWAY_URL if the runtime URL is a pooler) next to
+    # SPRING_DATASOURCE_*. Flyway never creates roles; see README, "Database roles".
+    placeholders:
+      # Name of the runtime role that migrations grant privileges to (V3 onwards). Lower-case identifier only:
+      # RuntimeRolePlaceholderGuard refuses anything else at startup, before Flyway runs, because the value is
+      # substituted into SQL text. The role must already exist.
+      runtime_role: ${PEOPLEHUB_DB_RUNTIME_ROLE:peoplehub_app}
 
   data:
     redis:

@@ -29,9 +29,9 @@ import org.testcontainers.utility.DockerImageName;
  */
 class ScheduledJobInstancesTest {
 
-    static final PostgreSQLContainer POSTGRES =
-            new PostgreSQLContainer(
-                    DockerImageName.parse(TestcontainersConfiguration.POSTGRES_IMAGE));
+    // Through the shared factory: V3 grants to the runtime role, so the database needs its roles
+    // first.
+    static final PostgreSQLContainer POSTGRES = TestcontainersConfiguration.newPostgresContainer();
     static final GenericContainer<?> REDIS =
             new GenericContainer<>(DockerImageName.parse(TestcontainersConfiguration.REDIS_IMAGE))
                     .withExposedPorts(6379);

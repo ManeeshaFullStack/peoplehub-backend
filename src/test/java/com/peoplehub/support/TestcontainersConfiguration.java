@@ -18,10 +18,21 @@ public class TestcontainersConfiguration {
     public static final String POSTGRES_IMAGE = "postgres:17-alpine";
     public static final String REDIS_IMAGE = "redis:7-alpine";
 
+    /**
+     * A PostgreSQL container with the database roles provisioned (B0-6). Migrations grant to the
+     * runtime role and never create it, so every database the application migrates needs it first:
+     * anything that starts its own PostgreSQL container must use this rather than {@code new
+     * PostgreSQLContainer(...)}.
+     */
+    public static PostgreSQLContainer newPostgresContainer() {
+        return new PostgreSQLContainer(DockerImageName.parse(POSTGRES_IMAGE))
+                .withInitScript(TestDatabaseRoles.INIT_SCRIPT);
+    }
+
     @Bean
     @ServiceConnection
     PostgreSQLContainer postgresContainer() {
-        return new PostgreSQLContainer(DockerImageName.parse(POSTGRES_IMAGE));
+        return newPostgresContainer();
     }
 
     @Bean
