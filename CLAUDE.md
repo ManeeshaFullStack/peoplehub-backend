@@ -36,8 +36,8 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   (`a50ece8 Initial commit`) when the repo moved; the earlier history is not restored and no other repository path
   is to be referenced.
 - Current status: **B0-1, B0-2 and B0-3 are merged; their code is in the baseline commit** (the individual merge
-  commits no longer exist). **B0-4 (`feature/b0-4-logging-validation-observability`) implemented locally, awaiting
-  review/PR.** Update this line when a phase merges.
+  commits no longer exist). **B0-4 (logging, request log, Sentry, health probes, graceful shutdown) is merged
+  (PR #4).** B0-5 (`feature/b0-5-scheduler-shedlock`) is next. Update this line when a phase merges.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15.12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
