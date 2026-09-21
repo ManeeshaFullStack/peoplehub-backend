@@ -1,0 +1,10 @@
+# Local development only (`SPRING_PROFILES_ACTIVE=local`, and always active under
+# `./mvnw spring-boot:test-run`). Human-readable console output and DEBUG for our own code.
+# Never activate this outside a developer machine: plain text is not machine-parseable and exception
+# messages are printed in full.
+logging:
+  structured:
+    format:
+      console:
+  level:
+    com.peoplehub: DEBUG
