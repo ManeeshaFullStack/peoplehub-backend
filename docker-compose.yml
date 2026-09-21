@@ -1,0 +1,153 @@
+# Backend DEVELOPMENT stack (Spec 16.4, D16; CLAUDE.md "B0-7 decisions").
+#
+# Scope: the backend, PostgreSQL, Redis and Mailpit. There is no frontend service because the frontend does not exist
+# until F0. The COMPLETE platform compose (with the frontend) moves to infrastructure ownership (peoplehub-infra) when
+# it does; this file stays the backend-scoped stack. The project name is deliberately different from any future
+# platform project ("peoplehub"), so their volumes and networks can never collide.
+#
+#   cp .env.example .env      # then fill in the four required secrets (they have no defaults on purpose)
+#   docker compose up --build --wait
+#   bash docker/smoke.sh      # verifies the stack end to end (also run in CI, job "compose-smoke")
+#
+# Every container: read-only root filesystem, no Linux capabilities, no privilege escalation, a non-root user, and
+# CPU/memory limits (Spec 16.4). The only writable paths are small tmpfs mounts, listed per service below. Nothing here
+# is meant for production: the environment-variable secrets, the published loopback ports and the single network are
+# development conveniences (hosting is an open item, Spec 19).
+name: peoplehub-backend-dev
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  # A crashing service should be seen, not quietly restarted, in development.
+  restart: "no"
+
+services:
+  db:
+    <<: *hardened
+    # Same image tag as the Testcontainers tests (TestcontainersConfiguration.POSTGRES_IMAGE); docker/smoke.sh checks it.
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    # The image's own postgres user (uid 70 on Alpine; it is 999 on Debian-based tags), so no capabilities are needed to
+    # drop privileges at start-up.
+    user: "70:70"
+    environment:
+      # Bootstrap superuser: exists only inside this container and is used only to run docker/postgres/init/01-roles.sh.
+      # (PostgreSQL rejects a superuser name starting with pg_.)
+      POSTGRES_USER: ${POSTGRES_BOOTSTRAP_USER:-pgbootstrap}
+      POSTGRES_PASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:?Set POSTGRES_BOOTSTRAP_PASSWORD in .env (see .env.example)}
+      POSTGRES_DB: ${PEOPLEHUB_DB_NAME:-peoplehub}
+      PEOPLEHUB_DB_OWNER_ROLE: ${PEOPLEHUB_DB_OWNER_ROLE:-peoplehub_owner}
+      PEOPLEHUB_DB_OWNER_PASSWORD: ${PEOPLEHUB_DB_OWNER_PASSWORD:?Set PEOPLEHUB_DB_OWNER_PASSWORD in .env (see .env.example)}
+      PEOPLEHUB_DB_RUNTIME_ROLE: ${PEOPLEHUB_DB_RUNTIME_ROLE:-peoplehub_app}
+      PEOPLEHUB_DB_RUNTIME_PASSWORD: ${PEOPLEHUB_DB_RUNTIME_PASSWORD:?Set PEOPLEHUB_DB_RUNTIME_PASSWORD in .env (see .env.example)}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs once, on an empty volume: creates the owner and runtime roles (Flyway never creates roles).
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    # Writable exceptions to read_only: scratch space, and the directory of PostgreSQL's unix socket.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /var/run/postgresql:rw,noexec,nosuid,size=8m,uid=70,gid=70
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    stop_grace_period: 30s
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 200
+
+  redis:
+    <<: *hardened
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    user: "999:1000"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (see .env.example)}
+    # Through a shell only so the password comes from the environment (an exec-form command does not expand variables).
+    # AOF persistence on the volume (Spec 13.3: refresh-token families and rate limits live here). No maxmemory and no
+    # eviction: evicting a refresh-token family or a rate-limit bucket would be a bug, so the container limit is the guard.
+    command: ["sh", "-c", 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+    volumes:
+      - redisdata:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    healthcheck:
+      test: ["CMD-SHELL", 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 100
+
+  mailpit:
+    <<: *hardened
+    # Dev-only mail catcher so outbox emails can be inspected without a real provider (Spec 16.4). Nothing sends mail
+    # until B1; the backend will reach it as mailpit:1025. Its image ships its own /mailpit readyz health check.
+    image: axllent/mailpit:v1.31.2@sha256:74d609a42ec279aa63c6b4622a6fa9b5408d1ad5b1d76a1c4be40a265ce0863d
+    user: "10001:10001"
+    ports:
+      # Web UI only, on loopback, on a non-default port (8025 and 1025 are commonly used by other tools).
+      - "127.0.0.1:${PEOPLEHUB_MAILPIT_UI_PORT:-18025}:8025"
+    # Its message store is a file under /tmp. Messages are deliberately not kept across restarts.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 100
+
+  backend:
+    <<: *hardened
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: peoplehub-backend:dev
+    # The image is already non-root (uid 10001) and owns its HEALTHCHECK (liveness) and TZ=UTC.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      # Loopback only.
+      - "127.0.0.1:${PEOPLEHUB_BACKEND_PORT:-8080}:8080"
+    environment:
+      # Two roles (CLAUDE.md, B0-6/3): the application connects as the least-privileged runtime role, Flyway migrates as
+      # the owner role. SPRING_PROFILES_ACTIVE is deliberately not set: the `local` profile must never run in a container.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/${PEOPLEHUB_DB_NAME:-peoplehub}
+      SPRING_DATASOURCE_USERNAME: ${PEOPLEHUB_DB_RUNTIME_ROLE:-peoplehub_app}
+      SPRING_DATASOURCE_PASSWORD: ${PEOPLEHUB_DB_RUNTIME_PASSWORD:?Set PEOPLEHUB_DB_RUNTIME_PASSWORD in .env (see .env.example)}
+      SPRING_FLYWAY_USER: ${PEOPLEHUB_DB_OWNER_ROLE:-peoplehub_owner}
+      SPRING_FLYWAY_PASSWORD: ${PEOPLEHUB_DB_OWNER_PASSWORD:?Set PEOPLEHUB_DB_OWNER_PASSWORD in .env (see .env.example)}
+      PEOPLEHUB_DB_RUNTIME_ROLE: ${PEOPLEHUB_DB_RUNTIME_ROLE:-peoplehub_app}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (see .env.example)}
+      # Only variables that have a value here are forwarded: an empty forwarded value would override the application's
+      # own default with a blank. Each shutdown phase gets this long (B0-4 D8); see stop_grace_period below.
+      SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: ${SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE:-30s}
+      LOGGING_LEVEL_ROOT: ${LOGGING_LEVEL_ROOT:-INFO}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-docker-compose}
+      # Sentry is disabled while this is empty (nothing leaves the process).
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    # Writable exception to read_only: the JVM and Tomcat need a temporary directory. noexec is fine (verified).
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    # REQUIRED: at least 90s (CLAUDE.md, B0-5 decisions and section 12). Shutdown runs the web-server phase and then
+    # the scheduler phase one after another, each up to SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE (30s), plus a 5s
+    # unwind period for an interrupted job: 65s in the worst case. Docker's default (10s) would kill the container
+    # mid-shutdown. Deliberately a literal, not a variable, so it cannot be set too low by accident; docker/smoke.sh
+    # fails if it is below 2 x the timeout + 5s + a margin. Re-check when the production hosting is chosen (Spec 19).
+    stop_grace_period: 90s
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 300
+
+volumes:
+  # Named volumes (not bind mounts: slow and permission-prone on Windows). Project-prefixed, so they are
+  # peoplehub-backend-dev_pgdata and peoplehub-backend-dev_redisdata.
+  pgdata:
+  redisdata:
