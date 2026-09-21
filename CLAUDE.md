@@ -31,8 +31,13 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   in `application.yml`. Production hosting/versions are still an open item (§19).
 - **Track:** backend B0 → B14, tagged `v1.0.0`, *then* frontend/agent/release. This repo only owns the backend track.
   Do **not** build frontend, agent, or infra-repo concerns here.
-- Current status: **B0-1 and B0-2 merged. B0-3 (`feature/b0-3-api-standards-pagination-openapi`) implemented
-  locally, awaiting review/PR.** Update this line when a phase merges.
+- **Repository (source of truth for the code):** `https://github.com/ManeeshaFullStack/peoplehub-backend`, a private
+  repo on the owner's personal GitHub account. The history was **deliberately squashed** into one baseline commit
+  (`a50ece8 Initial commit`) when the repo moved; the earlier history is not restored and no other repository path
+  is to be referenced.
+- Current status: **B0-1, B0-2 and B0-3 are merged; their code is in the baseline commit** (the individual merge
+  commits no longer exist). B0-4 (`feature/b0-4-logging-validation-observability`) is next. Update this line when a
+  phase merges.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15.12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
