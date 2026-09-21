@@ -1,18 +1,36 @@
 # peoplehub-backend
 
-Spring Boot API for **PeopleHub**, a multi-role HR operations app (attendance, leave, approvals, org structure,
-notifications, reports) for a single organization.
+Spring Boot API for **PeopleHub**, a multi-role HR operations SaaS (attendance, leave, approvals, org structure,
+notifications, reports). The target design (master spec v9) is a **multi-organization** service in which every
+organization is a completely private workspace; that tenant model is **not implemented yet** (see "Scope" below).
 
-- **Source of truth:** [`PROJECT_MASTER_SPEC.md`](PROJECT_MASTER_SPEC.md) (v8). Scope changes update the spec first,
+- **Source of truth:** [`PROJECT_MASTER_SPEC.md`](PROJECT_MASTER_SPEC.md) (v9). Scope changes update the spec first,
   through a branch and pull request.
 - **Engineering rules:** [`CLAUDE.md`](CLAUDE.md) (workflow, architecture, security, testing, known spec issues).
-- **Status:** Phase B0 (Foundation) in progress. Currently there is a runnable skeleton (database, Flyway and Redis
-  wired up) with no business endpoints yet.
+- **Status:** Phase B0 (Foundation): `b0-1` to `b0-5` are merged; `b0-6` (append-only audit log) and `b0-7`
+  (docker-compose) are not started. The app is a runnable foundation with no business endpoints yet.
+
+## Scope: implemented now vs specified for later
+
+**Implemented (b0-1 to b0-5):** build and CI (tests, Spotless, secret scan); PostgreSQL with Flyway migrations and Redis;
+the API standards (`/api/v1` base path, pagination and sort envelope, one RFC 9457 problem-error shape, correlation
+ids, OpenAPI via springdoc); structured JSON logging with a request log; Sentry with PII scrubbing (off unless a DSN
+is set); Actuator health and readiness probes; graceful shutdown; and a scheduler (`@Scheduled` guarded by ShedLock,
+with `JobRunner`). Sections below describe these.
+
+**Specified by v9 but not implemented (future phases, mainly B2, F1 and security work):** multi-organization SaaS with
+hard tenant isolation (`organization_id` is the tenant boundary, and no tenant can discover another); founder-only
+public organization registration, where the founder becomes the first Super Admin and goes through email verification,
+mandatory MFA and organization setup; invitation-only Employees and Admins; one login (Organization + company email +
+password) for every role; and deactivation that revokes access immediately while keeping history. The business
+modules (employees, attendance, leave, approvals, reports) also come in later phases. Details:
+[`CLAUDE.md`](CLAUDE.md) ("v9 adoption") and the spec.
 
 ## Stack
 
-Java 21, Spring Boot 4.1.1, Maven (wrapper), PostgreSQL 17, Flyway, Hibernate, Redis 7, Testcontainers. Later phases add
-ShedLock, OpenAPI, logging and the rest as the spec's build order (Section 17) reaches them.
+Java 21, Spring Boot 4.1.1, Maven (wrapper), PostgreSQL 17, Flyway, Hibernate, Redis 7, Testcontainers, springdoc
+OpenAPI, Actuator, Sentry and ShedLock. Later phases add the rest of the spec's stack (email, authentication, rate
+limiting, reports and so on) as the build order (Section 17) reaches them.
 
 ## Prerequisites
 
@@ -139,8 +157,9 @@ class EmployeeController {
 ## Logging & observability
 
 **Logs** are one JSON object per line (Spring Boot's structured logging, `logstash` format) carrying `correlationId`
-(the same id as the `X-Correlation-Id` header and the error body) and `actorId` (`anonymous` until authentication
-exists; later the employee id, or `SYSTEM`/a job name for scheduled jobs). Every API call writes one line:
+(the same id as the `X-Correlation-Id` header and the error body) and `actorId` (`anonymous` for requests until
+authentication exists, then the employee id; `job:<name>` for scheduled jobs, which is already in place). Every API call
+writes one line:
 
 ```json
 {"@timestamp":"…","message":"HTTP request completed","level":"INFO","correlationId":"…","actorId":"anonymous",
