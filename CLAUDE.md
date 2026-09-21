@@ -36,19 +36,34 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   (`a50ece8 Initial commit`) when the repo moved; the earlier history is not restored and no other repository path
   is to be referenced.
 - Current status: **B0-1, B0-2 and B0-3 are merged; their code is in the baseline commit** (the individual merge
-  commits no longer exist). B0-4 (`feature/b0-4-logging-validation-observability`) is next. Update this line when a
-  phase merges.
+  commits no longer exist). **B0-4 (`feature/b0-4-logging-validation-observability`) implemented locally, awaiting
+  review/PR.** Update this line when a phase merges.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15.12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
   closes (the OpenAPI check was deferred out of `b0-3` because there is no real API surface to compare yet); (4) the
   Dockerfile as its own branch.
-- **Must-do in `b0-4` (found while building `b0-3`):** exception *messages* can contain personal data (for example a
-  Postgres unique-violation message includes the offending key value, and `GlobalExceptionHandler` logs the full
-  exception). Decide and implement the scrubbing at the logging layer (message-free throwable rendering and Sentry
-  `beforeSend`), and make services translate expected DB conflicts into `ApiProblemException` with a safe `detail`.
+- **Exception messages can contain personal data** (for example a Postgres unique-violation message includes the
+  offending key value). Done in `b0-4` at the logging layer: message-free throwable rendering, a Sentry allowlist
+  scrubber, and Hibernate's own error-text logger switched off (see "B0-4 decisions" below, D5/D6).
+  **Owed from B4 onward (tracked, D6):** domain services (attendance session overlaps, leave overlaps, duplicate
+  unique keys, and so on) must translate *expected* conflicts into `ApiProblemException` with the correct **409** and
+  a safe `detail`. Until then an unexpected DB integrity violation is a generic 500 with message-free logging. That
+  is a stop-gap, **not** the permanent behaviour: do not add a blanket `DataIntegrityViolationException` -> 409
+  handler (it would hide real bugs), and do not let 500 quietly become the answer for a conflict a user can cause.
   Also owed later: 401/403 responses must use the same problem body (B2 Security entry points); `Idempotency-Key`
   handling (B4).
+- **Open decision item (raised in `b0-4`, no code change today): log timestamp zone.** Structured log timestamps use
+  the JVM's default zone offset (for example `+05:30` on a developer machine), not forced UTC. It is an unambiguous
+  ISO-8601 instant, so nothing breaks, and a container's `TZ` will likely make it UTC and the question moot. Owner
+  decision: do **not** add a custom formatter in `b0-4`; revisit when containerizing (`b0-7` / §16.4) and either
+  confirm the container runs in UTC or force UTC then.
+- **Open decision item (raised in `b0-4`): Sentry scrubber is a denylist by name for top-level fields.**
+  `SentryEventScrubber` allowlists tags and contexts but clears the other data-carrying event fields by name, so a
+  new top-level field added by a future SDK version would not be cleared automatically. Owner decision: leave as is
+  for `b0-4` (do not rebuild it into a true allowlist now). **Re-check the class every time `sentry.version` is
+  bumped**; if it is still wanted then, rebuild the event from permitted fields only, with a test that fails if any
+  unlisted field survives.
 - **Owner decisions (initialization):** Maven + Maven Wrapper (not Gradle). `PROJECT_MASTER_SPEC.md` stays in this
   repo for the current implementation phase (not moved to `peoplehub-docs`) and remains the source of truth.
   `.gitignore`, `CLAUDE.md`, `PROJECT_MASTER_SPEC.md`, `README.md` and `doc/` (when it exists) are tracked project
@@ -56,6 +71,36 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   **Never invent or guess the owner's GitHub handle.** Do not create `CODEOWNERS` until the owner supplies the handle
   or a phase requires it (auth/migration/security paths, §16.2). Spec inconsistencies are recorded in §15 and flagged
   to the owner before the affected phase; the spec itself is not edited.
+
+### B0-4 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
+
+- **D1 — Health endpoints.** Split into `/actuator/health/liveness` and `/actuator/health/readiness`. The Dockerfile
+  health check uses **liveness**. This deviates from the literal spec path (§16.4 names `/actuator/health` for
+  liveness) on purpose: liveness must not depend on PostgreSQL or Redis, so a DB/Redis blip makes the instance
+  *not ready* (traffic stops) without getting the container *restarted*. Readiness also verifies DB and Redis. The root
+  `/actuator/health` is the full aggregate (status + group names only); do not use it for restarts. Logged as
+  §15 item 9.
+- **D2 — JSON logging.** Spring Boot's built-in structured logging (`logging.structured.format.console=logstash`,
+  Logback). No `logstash-logback-encoder` dependency.
+- **D3 — Request log path.** Log the matched **route template** (`/api/v1/admin/employees/{id}`), never the raw path or
+  the query string. Unmatched requests log `UNMATCHED`. No headers, IP or body are logged.
+- **D4 — Actor id before auth.** `ActorIdFilter` seeds `anonymous` now; B2's authentication step wires the real employee
+  id via `ActorId.set(...)`, and scheduled jobs use `SYSTEM` or the job name. The filter owns clearing the MDC.
+- **D5 — Sentry scrubbing.** `SentryEventScrubber`: tags and contexts are a true allowlist; every other data-carrying
+  field is cleared by name, so **re-check the class whenever `sentry.version` is bumped** (a new top-level SDK field
+  would not be cleared automatically). Keep exception type/module/frames, the log message
+  *template*, `correlationId` and `actorId` tags, level/release/environment. Drop exception messages, formatted
+  message and arguments, request, user, breadcrumbs (`max-breadcrumbs: 0`), extras, server name, transaction name and
+  every context except runtime/os/spring. Sentry is **disabled when `SENTRY_DSN` is empty**; no tracing.
+- **D6 — DB integrity violations.** Generic 500 with message-free logging for now (no blanket 409). Tracked follow-up
+  from B4 onward: see the "Owed from B4 onward" item above. Also turns off Hibernate 7's `org.hibernate.orm.jdbc.error`
+  logger, which writes the database's error text (including the offending key) as a log *message*.
+- **D7 — Metrics.** Micrometer collects metrics; `/actuator/metrics` (and every endpoint except `health`) stays
+  **unexposed until B2 auth exists**. Revisit with authentication, or on a separate management port.
+- **D8 — Graceful shutdown.** `server.shutdown=graceful`, `spring.lifecycle.timeout-per-shutdown-phase=30s`,
+  overridable with `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE`. **`[confirm]`: 30s is an unconfirmed default**; flag it
+  as such in the PR description. Keep it below the orchestrator's stop grace period.
+- **D9 — Docs.** README (logging & observability section) and `.env.example` are updated in the `b0-4` branch.
 
 ## 3. Workflow — every task
 
@@ -220,6 +265,12 @@ SAST, dependency scan, secret scan, OpenAPI breaking-change check.
   verbose SQL/DEBUG shipped to prod. Request-logging filter (method, path, status, duration, correlation id), excluding
   health checks.
 - Actuator health (liveness) + readiness that checks DB/Redis; graceful shutdown enabled; Sentry with PII scrubbing.
+- **As built in `b0-4`** (`common/logging`, `common/observability`; decisions D1–D9 in §2): the request log records the
+  matched route template, never the raw path or query; `ActorId` is the only way to set the actor in MDC (B2 auth and
+  jobs call it); exception messages are never rendered (`MessageFreeStackTracePrinter`, Sentry allowlist scrubber,
+  Hibernate's `org.hibernate.orm.jdbc.error` logger off), so **never put a value in a log message or an exception
+  message expecting it to be scrubbed**; only `health` is exposed on Actuator until B2; liveness ignores DB/Redis,
+  readiness checks them. Tests that claim "no PII in logs/Sentry" assert on the whole captured output/envelope.
 
 ## 12. Containers & environments (§16.4)
 
@@ -278,6 +329,7 @@ Resolve each **before** the phase named; batch fixes into one `docs:` spec PR. U
 | 6 | §13.1 gives `size` a max of 100 but does not say what happens above it | decided in `b0-3` (owner approved) | `size` > 100 is a 400 (`invalid-page-request`) that points to the export; no silent clamp. |
 | 7 | §13 says "RFC 7807"; RFC 9457 obsoletes it with the same shape. §9.2 still has the `your-domain` placeholder, so no real base URL exists for problem `type` | decided in `b0-3` (owner approved) | Cite RFC 9457; `type` and `instance` are URNs (`urn:peoplehub:problem:*`, `urn:peoplehub:request:*`). |
 | 8 | §17 names `b0-4` "logging-validation-observability", but the RFC 7807 error body needs a correlation id and the validation `@ControllerAdvice`, both required by `b0-3`'s pagination errors | decided in `b0-3` (owner approved) | Correlation-id filter and `GlobalExceptionHandler` live in `b0-3`; `b0-4` adds JSON logging, actor id, request log, Sentry, actuator on top. |
+| 9 | §16.4 names `/actuator/health` as the liveness endpoint, but Spring Boot's aggregate `/actuator/health` includes the database and Redis, so using it for restarts would let a DB/Redis blip restart the container | decided in `b0-4` (owner approved, D1) | Liveness is `/actuator/health/liveness`, readiness (adds DB + Redis) is `/actuator/health/readiness`; the Dockerfile health check uses liveness. Spec text to be corrected in the next spec PR. |
 
 ## 16. Never do
 

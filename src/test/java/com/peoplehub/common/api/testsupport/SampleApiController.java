@@ -11,12 +11,14 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
 import org.springframework.context.annotation.Profile;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
@@ -116,6 +118,27 @@ public class SampleApiController {
     @GetMapping("/boom")
     public void boom() {
         throw new IllegalStateException("secret internal detail for jane.doe@example.com");
+    }
+
+    /**
+     * Fails the way an unhandled unique violation does: the message quotes the offending value.
+     * Used to prove that value reaches neither the client, the logs nor Sentry.
+     */
+    @GetMapping("/integrity")
+    public void integrity() {
+        throw new DataIntegrityViolationException(
+                "could not execute statement; ERROR: duplicate key value violates unique constraint"
+                        + " \"uq_employee_email\"\n  Detail: Key (email)=(jane.doe@example.com)"
+                        + " already exists.",
+                new SQLException("Key (email)=(jane.doe@example.com) already exists.", "23505"));
+    }
+
+    /** Takes a moment, so a test can close the application while a request is in flight. */
+    @GetMapping("/slow")
+    public String slow(@RequestParam(defaultValue = "1500") @Min(0) @Max(10_000) long millis)
+            throws InterruptedException {
+        Thread.sleep(millis);
+        return "finished";
     }
 
     @GetMapping("/instant")

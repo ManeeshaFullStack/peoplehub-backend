@@ -29,6 +29,77 @@ spring:
       timeout: 2s
       connect-timeout: 2s
 
+  lifecycle:
+    # [confirm] The spec gives no number: 30s is a default, not an approved value. Override per
+    # environment with SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE. Keep it below the orchestrator's
+    # stop grace period, or the container is killed mid-request anyway.
+    timeout-per-shutdown-phase: 30s
+
+server:
+  # Finish in-flight requests (and, later, scheduled jobs) before the container stops (Spec 16.4).
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Health only. Metrics are collected but the endpoint stays unexposed until authentication
+        # exists (B2): actuator is an unauthenticated surface, so nothing else is published on it.
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # Status only: component names, driver versions and error text never leave the app.
+      show-details: never
+      show-components: never
+      group:
+        # Liveness = "is the process alive". It deliberately ignores the database and Redis, so a
+        # brief outage of either cannot get the container restarted. Container health checks use
+        # /actuator/health/liveness. (Spec 16.4 names /actuator/health for this; see CLAUDE.md.)
+        liveness:
+          include: livenessState
+        # Readiness = "can it serve traffic": also verifies PostgreSQL and Redis.
+        readiness:
+          include: readinessState,db,redis
+
+logging:
+  structured:
+    format:
+      # One JSON object per line (Spec 14.1) with MDC (correlationId, actorId) and key/values.
+      # The `local` profile turns this off for readable console output.
+      console: logstash
+    json:
+      stacktrace:
+        # Exception messages can hold personal data (a Postgres unique violation quotes the key), so
+        # traces are rendered without them. See MessageFreeStackTracePrinter.
+        printer: com.peoplehub.common.logging.MessageFreeStackTracePrinter
+  level:
+    # Environment-driven: override with LOGGING_LEVEL_ROOT / LOGGING_LEVEL_COM_PEOPLEHUB. INFO
+    # everywhere except the `local` profile; never ship DEBUG or verbose SQL by default (Spec 14.1).
+    root: INFO
+    # Hibernate logs the database's own error text as a log *message* (not an exception), which for
+    # a unique violation includes the offending value ("Key (email)=(...) already exists"). The
+    # exception still propagates and is logged by GlobalExceptionHandler without its message. This
+    # is Hibernate 7's category for it; DatabaseErrorLoggingTest fails if that name changes.
+    org.hibernate.orm.jdbc.error: "OFF"
+
+sentry:
+  # SENTRY_DSN, SENTRY_ENVIRONMENT and SENTRY_RELEASE come from the environment (see .env.example).
+  # With no DSN Sentry is disabled and nothing leaves the process.
+  send-default-pii: false
+  attach-server-name: false
+  # No breadcrumbs: log text can carry values, and the correlation id already ties an event to logs.
+  max-breadcrumbs: 0
+  # Promote these MDC keys to event tags (the scrubber allowlists exactly these).
+  context-tags: correlationId,actorId
+  # Run Sentry's exception resolver last (default: first) so GlobalExceptionHandler answers first.
+  # Otherwise every handled 4xx would be reported. Unexpected errors still reach Sentry through the
+  # ERROR log record GlobalExceptionHandler writes.
+  exception-resolver-order: 2147483647
+  logging:
+    minimum-event-level: error
+
 springdoc:
   api-docs:
     enabled: true

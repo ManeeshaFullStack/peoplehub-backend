@@ -79,8 +79,11 @@ src/main/java/com/peoplehub/            # package-by-feature; root package com.p
     paging/                             # @PageParams, PageQuery, PageResponse
     correlation/                        # X-Correlation-Id filter
     openapi/                            # springdoc configuration
+  common/logging/                       # actor id, request log, message-free stack traces
+  common/observability/                 # Sentry PII scrubber
 src/main/resources/
   application.yml                       # non-secret settings only
+  application-local.yml                 # `local` profile: readable console, DEBUG (developer machines only)
   db/migration/                         # Flyway migrations (forward-only)
 src/test/java/com/peoplehub/
   support/                              # @IntegrationTest, @ApiWebTest, Testcontainers (Postgres, Redis)
@@ -131,6 +134,44 @@ class EmployeeController {
   (with limits and allowed sort fields) and the standard error responses. Swagger UI is off by default; enable it
   locally with `SPRINGDOC_SWAGGER_UI_ENABLED=true`, for example
   `SPRINGDOC_SWAGGER_UI_ENABLED=true ./mvnw spring-boot:test-run`, then open `/swagger-ui/index.html`.
+
+## Logging & observability
+
+**Logs** are one JSON object per line (Spring Boot's structured logging, `logstash` format) carrying `correlationId`
+(the same id as the `X-Correlation-Id` header and the error body) and `actorId` (`anonymous` until authentication
+exists; later the employee id, or `SYSTEM`/a job name for scheduled jobs). Every API call writes one line:
+
+```json
+{"@timestamp":"…","message":"HTTP request completed","level":"INFO","correlationId":"…","actorId":"anonymous",
+ "method":"GET","route":"/api/v1/admin/employees/{id}","status":200,"durationMs":12}
+```
+
+- **No personal data.** The request log records the matched *route template*, never the raw path or query string
+  (they can hold ids or approval tokens), and never headers, IP or bodies. Exception *messages* are never written
+  (they can quote a value, for example a Postgres unique violation quotes the key): stack traces are logged as class
+  names and frames only, Hibernate's own database-error logger is off, and Sentry events go through an allowlist
+  scrubber. So do not put a value in a log message or an exception message and expect it to be scrubbed; log ids.
+- **Levels** are INFO by default. Override per environment with `LOGGING_LEVEL_ROOT` / `LOGGING_LEVEL_COM_PEOPLEHUB`.
+- **Local development.** `./mvnw spring-boot:test-run` activates the `local` profile (readable console, DEBUG for
+  `com.peoplehub`). For your own run use `SPRING_PROFILES_ACTIVE=local`. Never use it outside a developer machine.
+
+**Health** (Actuator; nothing else is exposed until authentication exists, and responses carry status only):
+
+| Endpoint | Meaning | Use it for |
+|---|---|---|
+| `/actuator/health/liveness` | The process is alive. Ignores PostgreSQL and Redis. | Container health check / restart decisions |
+| `/actuator/health/readiness` | Ready to serve: also checks PostgreSQL and Redis. | Load balancer / orchestrator traffic routing |
+| `/actuator/health` | Full aggregate (status and group names). | Humans; not for restarts |
+
+Liveness and readiness are separate on purpose: a brief database or Redis outage should stop traffic to an instance,
+not restart it. (Spec 16.4 names `/actuator/health` for liveness; this is a recorded deviation, CLAUDE.md §15 item 9.)
+Health checks are not written to the request log. Metrics are collected but not exposed yet.
+
+**Graceful shutdown** is on: in-flight requests get up to `SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE` (default `30s`,
+**unconfirmed**) to finish. Keep it below the orchestrator's stop grace period.
+
+**Sentry** is off unless `SENTRY_DSN` is set (also `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`). No tracing, no breadcrumbs.
+Only `correlationId` and `actorId` tags, the exception type and frames and the log message template are sent.
 
 ## Git workflow (Spec 16.2)
 
