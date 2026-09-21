@@ -1,7 +1,17 @@
 # CLAUDE.md — PeopleHub Backend (`peoplehub-backend`)
 
 Persistent engineering rules for Claude in this repository. This file is a **condensed operating guide**;
-`PROJECT_MASTER_SPEC.md` (v8) is the **single source of truth**. Section numbers below (e.g. `§4.5`, `D9`) refer to it.
+`PROJECT_MASTER_SPEC.md` (**v9**, which supersedes v8) is the **single source of truth**. Section numbers below (e.g.
+`§4.5`, `D9`) refer to it. v9 keeps the v8 numbering (§0–§22) and adds §2.1, §10.4, §12.1, §13.0, §15.1, §16.5 and
+§22.1.
+
+> **Two different `D#` series exist.** The spec has decisions D1–D30 (its §0). This repository also records its own
+> implementation decisions as **"B0-4 decisions" D1–D9** and **"B0-5 decisions" S1–S7** (both in §2 below). A `D#` in the
+> B0-4 block, or next to logging/health/Sentry/shutdown topics (for example "the D8 lifecycle timeout"), is the
+> repository's; a `D#` next to a `§` reference or a product rule (for example D6 MFA, D7 tombstone, D8 email
+> approvals, D9 no self-approval) is the spec's. The historical labels are deliberately not renumbered (owner
+> decision). When a reference could be ambiguous, write the context explicitly: **"Spec D21"**, **"Spec D22"**,
+> **"B0-4 D8"**, **"B0-5 S1"**.
 
 ## 1. Source of truth & precedence
 
@@ -17,8 +27,11 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 
 ## 2. Project snapshot
 
-- Single-organization HR ops backend: attendance (server-authoritative sessions), leave, approvals, org/departments,
-  calendar, notifications, reports, audit. Standalone (own auth/org/data).
+- **Multi-organization HR operations SaaS backend** (v9, D21): one deployment can host many organizations, and each one
+  behaves as a completely private workspace (hard tenant isolation; see "v9 adoption" below). Scope: attendance
+  (server-authoritative sessions), leave, approvals, org/departments, calendar, notifications, reports, audit.
+  Standalone (own auth/org/data). **Not built yet:** the merged B0 code has no tenant model; organization
+  registration, tenancy and login arrive in B2, so B0 must not pretend to implement them.
 - **Stack:** Java 21, Spring Boot (modular monolith, **package-by-feature**), PostgreSQL (`timestamptz` everywhere,
   `btree_gist`), Flyway (forward-only), Redis (refresh-token families, rate limiting, presence, Spring Cache),
   Jakarta Validation, Logback JSON + MDC, `@Scheduled` + ShedLock, provider-agnostic `EmailService` + transactional
@@ -35,12 +48,14 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   repo on the owner's personal GitHub account. The history was **deliberately squashed** into one baseline commit
   (`a50ece8 Initial commit`) when the repo moved; the earlier history is not restored and no other repository path
   is to be referenced.
-- Current status: **B0-1, B0-2 and B0-3 are merged; their code is in the baseline commit** (the individual merge
-  commits no longer exist). **B0-4 (logging, request log, Sentry, health probes, graceful shutdown) is merged
-  (PR #4).** B0-5 (`feature/b0-5-scheduler-shedlock`) is next. Update this line when a phase merges.
+- Current status: **b0-1, b0-2 and b0-3 are merged; their code is in the baseline commit** (the individual merge
+  commits no longer exist). **b0-4 is merged** (logging, request log, Sentry, health probes, graceful shutdown; PR #4).
+  **b0-5 is merged** (ShedLock scheduler, `JobRunner`, V2 lock table; PR #6). **b0-6 (`b0-6-audit-log-append-only`) is
+  not started. b0-7 (`b0-7-docker-compose`) is not started** and is deferred (see §12). The master spec is **v9**; its
+  own §16.5 checkpoint is stale for b0-4/b0-5 (see §15 item 10). Update this line when a phase merges.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
-  (§15.12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
+  (§15 item 12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
   closes (the OpenAPI check was deferred out of `b0-3` because there is no real API surface to compare yet); (4) the
   Dockerfile as its own branch.
 - **Exception messages can contain personal data** (for example a Postgres unique-violation message includes the
@@ -71,6 +86,61 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   **Never invent or guess the owner's GitHub handle.** Do not create `CODEOWNERS` until the owner supplies the handle
   or a phase requires it (auth/migration/security paths, §16.2). Spec inconsistencies are recorded in §15 and flagged
   to the owner before the affected phase; the spec itself is not edited.
+
+### v9 adoption — multi-organization SaaS (FUTURE-PHASE requirements; none of this is built or to be retrofitted into B0)
+
+v9 (spec §0 D21–D30, §2.1, §3.3, §8.2, §12.1, §13.0, §15.1, §22.1) changes the product from "one deployment = one
+company" to a multi-organization SaaS. It lands **primarily in B2** (`b2-1-org-tenant-employee-schema` …
+`b2-8-tenant-isolation-security-tests`, spec §17), in B1 (email/verification/invite mail) and in F1/security work, and
+must not be pulled into B0. The requirements to design towards:
+
+- **Tenant boundary (D21, §2.1.1):** every authenticated principal is bound to exactly one `organization_id`
+  (immutable internal id; the public **organization login key** is a separate, unique, normalized value). Tenant scope
+  comes **only** from the authenticated principal (JWT carries `organization_id`, employee id, role), never from a
+  body/query/path value after login.
+- **Absolute isolation (D22, §2.1.2, §15.1):** no tenant discovery, listing, counting, searching, or inference of other
+  organizations or their users/data. A cross-tenant object id is **not found** inside the caller's tenant, never
+  "forbidden because it belongs to another company". Admin and Super Admin power is organization-local and never
+  crosses the boundary. Every tenant-owned query, mutation, cache key, event, export, SSE stream, audit row and
+  background job is scoped by the organization id; no unrestricted `findById` for tenant-owned aggregates in request
+  paths.
+- **Defense in depth (D30, §12.1):** mandatory application-layer scoping **and** PostgreSQL RLS (or an equally strong
+  DB-level policy proven by tests) on tenant-owned tables, with tenant-safe composite keys where practical (for example
+  `UNIQUE(organization_id, email_normalized)`). RLS needs a non-owner runtime role, which is consistent with the
+  two-DB-role design in §9. This is a **future implementation requirement**, not something to bolt on early.
+- **Registration / bootstrap (D23, D29, §2.1.3):** only an organization **founder** self-registers (public
+  `/register`). Organization + founder are created atomically; the founder is an individual (own company email and
+  private password, no shared "superadmin" credentials) and becomes the first `SUPER_ADMIN`. Flow: email verification ->
+  **mandatory MFA** (TOTP + recovery codes) -> first-time organization setup -> the real Super Admin dashboard. No
+  normal session exists before verification; responses are non-enumerating.
+- **Invitation-only membership (D24, D25, §2.1.5, §3.3):** Employees and additional Admins never sign up publicly. They
+  arrive by single-use, expiring email invitations and set their own passwords privately. A Super Admin may promote an
+  existing active Employee (step-up protected) **or** invite a new person directly as `ADMIN`. An Admin or Super Admin
+  is always an Employee record (`role` is a relation, not a separate identity).
+- **Login (D27, §2.1.6, §8.2):** every role uses **Organization + company email + password**; there is no role
+  selector. The server resolves the tenant, authenticates inside it, then routes by the stored role. Failure is one
+  generic message with timing and rate-limit protection.
+- **MFA (D6, §8.3):** mandatory for Admin and Super Admin (including a directly invited Admin, before first workspace
+  access); optional for Employees.
+- **Deactivation (D26, §2.1.7):** immediately blocks login, refresh, API and SSE access, revokes refresh-token families
+  and sessions and device authorization, reassigns pending approvals and closes an open session (`DEACTIVATION`), while
+  preserving attendance, leave, approval and audit history. Normal exit is deactivation, not hard delete; D7 tombstoning
+  stays a separate step-up operation.
+
+What this means for the merged B0 work: nothing is rewritten. Design questions it raises for the *next* B0 branches
+(none decided; ask before acting):
+
+- **`b0-6` audit table.** Spec §16.5 says that if the audit schema needs `organization_id` it must be designed
+  forward-compatibly without implementing B2 early, and §12.1 says audit rows carry `organization_id`. No `organization`
+  table exists until B2, so how `audit_log` relates to `organization_id` is **unresolved and MUST be resolved during
+  `b0-6` planning, before the audit migration is created** (see §15 item 13). The options (a nullable column, absent
+  until B2, or another forward-compatible design) are to be evaluated against v9 first. **Not decided here.**
+- **Tenant-owned scheduled jobs (B4+).** A job that touches tenant-owned data must carry the organization id
+  explicitly and compute "due" in that organization's timezone. Whether ShedLock locks are per job or per tenant is
+  **unresolved** and is decided when the first such job (the B4 day split) is built; the B0-5 mechanism supports either.
+- **Logging context (B2).** Spec §15.1 allows an internal organization id in operational logs (never exposed across
+  tenants). **Unresolved until B2 introduces tenant context:** if it is added to MDC, the Sentry scrubber's tag
+  allowlist must be extended deliberately (it currently allows only `correlationId` and `actorId`).
 
 ### B0-4 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
 
@@ -204,24 +274,28 @@ shared/production infrastructure is involved; or a Git action needs approval.
 - **Authorization lives in the service layer**, not only controllers (§3.2). Self-service endpoints take the employee id
   **from the token only** — never from a path/query/body param (IDOR). The department roster endpoint never accepts a
   caller-supplied department id (§3.1). Admin can never modify a Super Admin. **Nobody approves or edits their own
-  leave/attendance (D9).**
+  leave/attendance (D9).** *From B2 (v9):* every tenant-owned lookup is tenant-qualified with the organization taken
+  from the authenticated principal, and another tenant's id is "not found" (§2.1.2, §15.1); see "v9 adoption" in §2.
 - **Time:** inject a `Clock`; never call `Instant.now()`/`LocalDate.now()` directly. Store UTC `timestamptz`; compute
-  durations from instants in **seconds**; day boundaries use the **org timezone** (§4.2). All time logic must be
-  testable with a fixed/advancing clock.
+  durations from instants in **seconds**; day boundaries use the **organization's timezone** (`organization.timezone`,
+  §4.2, §11, §12.1). All time logic must be testable with a fixed/advancing clock.
 - **Server is the only clock (R5).** Attendance timestamps are server-set. The only client-influenced times are the
   bounded offline check-out (§4.6) and signed agent events (§4.4), both flagged.
 - **Attendance golden rules R1–R6 are non-negotiable** (§4.1): only manual check-out, verified shutdown, estimated
   shutdown, deactivation, admin edit/approved correction, or the safety cap end a session; midnight *splits*, never
   ends. Rest counts (D1). Presence never affects hours or auth (§8.4).
 - **Caching (D15/§13.3):** cache-aside via Spring Cache/Redis **only** for org settings, leave types, department list,
-  calendar ranges; 5–15 min TTL + explicit `@CacheEvict` on every write; keys namespaced `org:{orgId}:…`. **Never
-  cache** open sessions, `attendance_day`, leave balances/ledger, the live dashboard, or anything mid-approval.
+  calendar ranges; 5–15 min TTL + explicit `@CacheEvict` on every write; keys namespaced `org:{organizationId}:…`
+  (spec §12.1; §13.3 writes `orgId`, same thing) so tenants can never share a cache entry. **Never cache** open
+  sessions, `attendance_day`, leave balances/ledger, the live dashboard, or anything mid-approval.
 - **Scheduled jobs:** `@Scheduled` + ShedLock, idempotent, catch-up after downtime, org-timezone day logic, failures
   alert (never silent). **As built in `b0-5`** (`common/scheduling`, decisions S1–S7 in §2): a job is a non-final bean
   with `@Scheduled` + `@SchedulerLock` whose body calls `jobRunner.run("<name>", …)` (name = lock name = actor
   `job:<name>`); the job derives its work from persisted state and decides "due" in the org timezone, so a run after
   downtime repairs the gap and a repeat run is a no-op; every job ships a proof test of that. No generic watermark
   table. Failures are logged once at ERROR by `JobRunner` (that is the Sentry alert), never rethrown, never silent.
+  *Multi-tenant (v9, future):* a job that touches tenant-owned data carries the organization id explicitly and computes
+  "due" in that organization's timezone; lock granularity (per job or per tenant) is decided with the first such job.
 - **Email:** always via the transactional **outbox**, committed in the same transaction as the business change (§9.2).
 - Lombok: `@Getter/@Setter/@Builder` on entities; **avoid `@Data` on JPA entities** (broken `equals/hashCode/toString`
   with lazy associations). `@Data`/records are fine for DTOs and value objects. The annotation-processor dependency
@@ -251,6 +325,10 @@ shared/production infrastructure is involved; or a Git action needs approval.
 - Every response carries `X-Correlation-Id` (propagated from the caller only if it matches `[A-Za-z0-9._-]{1,64}`,
   else generated) and it is in MDC as `correlationId`. `Idempotency-Key` on state-changing POSTs (B4); ISO-8601 UTC
   instants (Jackson 3 default, locked by a test); consistent generic auth errors (no enumeration).
+- **Tenant contract (from B2, spec §13.0):** every authenticated endpoint ignores or rejects any client attempt to
+  select an `organization_id`; tenant scope comes only from the authenticated principal. Public endpoints
+  (`/public/...`, `/auth/login`, forgot/reset/resend, invitation preview/accept) are non-enumerating: the same response
+  whether or not the organization or account exists. Neither exists yet.
 - Do not use `HandlerTypePredicate` selectors on one predicate expecting AND: they are OR. Combine with `.and(...)`.
 
 ## 7. Security rules (§15 — non-negotiable)
@@ -260,7 +338,11 @@ shared/production infrastructure is involved; or a Git action needs approval.
 - Access JWT 15 min (in-memory client-side), `kid` key rotation; refresh token rotating in httpOnly Secure SameSite
   cookie, **reuse detection revokes the family**, sliding 30 d + absolute 90 d cap `[confirm]`; CSRF (double-submit +
   Origin) on refresh/logout; locked-down CORS.
-- MFA (TOTP) mandatory for Admin/Super Admin (D6); recovery codes; **step-up auth** for the actions listed in §8.3.
+- MFA (TOTP) mandatory for Admin/Super Admin (D6), including a directly invited Admin before first workspace access,
+  and optional for Employees; recovery codes; **step-up auth** for the actions listed in §8.3.
+- *From B2 (v9):* login is **Organization + company email + password** for every role with **no role selector** and one
+  generic failure message (D27); a deactivated user immediately loses login, refresh, API, SSE and device authority
+  while history is preserved (D26); the tenant-isolation gates in spec §15.1 apply. See "v9 adoption" in §2.
 - Approval email tokens: single-use, **hashed at rest**, bound to (request, approver), expiring; **GET is read-only**,
   decision via POST with CSRF (D8, §7.3).
 - CSV/Excel: reject formula-leading cells (`= + - @`, tab, CR) on import, escape on every export; size/row limits.
@@ -277,7 +359,13 @@ shared/production infrastructure is involved; or a Git action needs approval.
 - Every phase/branch ships **unit + integration tests**. Integration tests use **Testcontainers** (real Postgres/Redis) —
   no H2 substitutes for Postgres-specific behavior (partial unique index, `btree_gist` exclusion constraints,
   `timestamptz`).
-- **Every endpoint has a negative authorization test** (wrong role, other employee's data, unauthenticated).
+- **Every endpoint has a negative authorization test** (wrong role, other employee's data, unauthenticated; from B2
+  also **another organization's data**).
+- *From B2 (v9, spec §15.1, §22.1):* tenant tests are part of the definition of done for tenant-owned code: malicious
+  foreign-tenant UUID substitution on read/update/delete/export/approval/calendar/report endpoints; organization and
+  account enumeration resistance (wording **and** timing) for login, forgot-password and resend; and tenant-leakage
+  tests for SSE, Redis/cache keys, scheduled jobs, exports and email payload builders. The DB-level tenant defense (RLS
+  or equivalent) is exercised in integration tests, not merely documented.
 - Time-based logic uses an injectable clock: day split, DST-safe durations, org timezone, catch-up after downtime.
 - Concurrency and idempotency cases get real tests (e.g. two parallel check-ins → one session; double approval →
   one balance change).
@@ -310,8 +398,13 @@ shared/production infrastructure is involved; or a Git action needs approval.
 - Hibernate `ddl-auto` is `validate` or `none` — never `update`/`create` outside throwaway tests. Flyway runs with
   `clean-disabled`, `validate-on-migrate`, no out-of-order, no baseline (set in `application.yml`; do not loosen).
 - **Two DB roles are needed by `b0-6`:** a migration/owner role (used by Flyway via `spring.flyway.user/password`) and a
-  least-privilege runtime role for the app, which must have no `UPDATE`/`DELETE` on `audit_log` (§12, §15.13). Don't
-  design anything that forces Flyway and the app to share one set of credentials.
+  least-privilege runtime role for the app, which must have no `UPDATE`/`DELETE` on `audit_log` (§12, §15 item 13). Don't
+  design anything that forces Flyway and the app to share one set of credentials. (v9's PostgreSQL RLS defense, D30,
+  also needs a non-owner runtime role, so this design serves both.)
+- **Tenant schema (B2, spec §12.1; not before):** tenant-owned tables carry `organization_id NOT NULL` (or an
+  unambiguous tenant path), with tenant-safe composite uniqueness/foreign keys where practical, and the DB-level tenant
+  policy is proven by integration tests. Spec §12's base tables still write `org_id`; treat it as the same tenant key
+  and confirm the exact column name before `b2-1` (§15 item 12).
 - Tests use the real Postgres image via Testcontainers (`@IntegrationTest`, `support/TestcontainersConfiguration`); keep
   the image tag in one place and keep it equal to what production will run once hosting is decided.
 
@@ -321,8 +414,9 @@ A phase/branch is done only when: merged via PR with green CI; tests (incl. auth
 OpenAPI and docs updated; migrations reviewed; audit and notifications wired where the spec requires; the phase's
 security checklist items are ticked; demo-able through API tests.
 
-PR checklist (§16.2): tests added · negative-auth test · audit-log entry · migration reviewed · OpenAPI updated · docs
-updated · security notes · (screenshots N/A for backend). Required CI checks: build, unit + integration tests, lint,
+PR checklist (§16.2): tests added · negative-auth test (from B2 including a cross-tenant one) · audit-log entry ·
+migration reviewed · OpenAPI updated · docs updated · security notes · (screenshots N/A for backend). Required CI
+checks: build, unit + integration tests, lint,
 SAST, dependency scan, secret scan, OpenAPI breaking-change check.
 
 ## 11. Logging & observability (§14)
@@ -339,6 +433,9 @@ SAST, dependency scan, secret scan, OpenAPI breaking-change check.
   Hibernate's `org.hibernate.orm.jdbc.error` logger off), so **never put a value in a log message or an exception
   message expecting it to be scrubbed**; only `health` is exposed on Actuator until B2; liveness ignores DB/Redis,
   readiness checks them. Tests that claim "no PII in logs/Sentry" assert on the whole captured output/envelope.
+  *Multi-tenant (v9, from B2):* an internal organization id may be added to log context for support correlation but is
+  never exposed across tenants (spec §15.1); logs and Sentry must not leak one tenant's PII to another's surface, and the
+  Sentry tag allowlist is extended deliberately when the organization id is added.
 
 ## 12. Containers & environments (§16.4)
 
@@ -347,15 +444,25 @@ SAST, dependency scan, secret scan, OpenAPI breaking-change check.
 - **Stop grace period must be 90s or more** (`terminationGracePeriodSeconds` / Compose `stop_grace_period` / the host's
   equivalent), above the 65s worst-case shutdown (slow request then slow job, each up to the 30s lifecycle timeout, plus 5s unwind).
   Never leave the orchestrator default (Compose 10s, Kubernetes 30s). **Check this when writing the Dockerfile, in
-  `b0-7`, and whenever production hosting is chosen.** Details: §2, "B0-5 decisions".
+  `b0-7`, and whenever production hosting is chosen.** Details: §2, "B0-5 decisions". Spec v9 §16.5 requires the same
+  of `b0-7` ("orchestrator shutdown grace/budget consistent with the b0-4/b0-5 worst case").
 - **Docker Compose location is an open conflict** between §16.4 (`peoplehub-infra`) and §17 B0 (`b0-7-docker-compose`,
   this repo). Do not start `b0-7` until the user has resolved it.
 
 ## 13. Build order (backend track, §17)
 
-B0 Foundation → B1 Email/notifications → B2 Org/employees/auth → B3 Roles/departments/calendar/lifecycle → B4 Attendance
-core → B5 Devices/shutdown events → B6 Attendance reports → B7 Approval engine → B8 Corrections → B9 Leave → B10
-Comp-off → B11 Admin reports & month lock → B12 Presence → B13 Hardening/retention/DR → B14 QA & freeze (`v1.0.0`).
+B0 Foundation → B1 Email/notifications → B2 **Org, tenant isolation, employees & auth** → B3
+Roles/departments/calendar/lifecycle → B4 Attendance core → B5 Devices/shutdown events → B6 Attendance reports → B7
+Approval engine → B8 Corrections → B9 Leave → B10 Comp-off → B11 Admin reports & month lock → B12 Presence → B13
+Hardening/retention/DR → B14 QA & freeze (`v1.0.0`).
+
+**B2 (v9)** is where the multi-organization requirements land: multi-org tenant schema + DB isolation, organization
+registration/bootstrap, founder verification, founding Super Admin, Organization+email+password login, JWT + rotating
+refresh, Employee/Admin invitations, activation, direct Admin invite and promotion, deactivation/revocation, password
+policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-schema`,
+`b2-2-org-bootstrap-founder-verification`, `b2-3-login-jwt-refresh-tenant-context`,
+`b2-4-invite-activation-admin-invite`, `b2-5-password-policy-lockout-reset`, `b2-6-sessions-deactivation-revoke`,
+`b2-7-mfa-stepup-onboarding`, `b2-8-tenant-isolation-security-tests` (spec §17).
 
 - **Each phase merges before the next starts.** Order matters (e.g. approval engine B7 before corrections B8; email B1
   before invites in B2). Do not pull work forward.
@@ -364,6 +471,8 @@ Comp-off → B11 Admin reports & month lock → B12 Presence → B13 Hardening/r
   `b0-7-docker-compose` (each prefixed with a `<type>/`).
 - **B0 exit criteria:** CI green; sample migration; OpenAPI published; audit table rejects UPDATE/DELETE;
   `docker compose up` boots the stack; a deliberately bad request returns a field-level RFC 7807 error.
+- **B0 progress:** `b0-1` … `b0-5` merged; `b0-6` and `b0-7` not started. v9 (§16.5) says to continue from this actual
+  state and not to rebuild merged work; `b0-6` follows `b0-5`, and `b0-7` remains deferred (§12, §15 item 1).
 
 ## 14. Local environment notes
 
@@ -391,6 +500,21 @@ Comp-off → B11 Admin reports & month lock → B12 Presence → B13 Hardening/r
 
 Resolve each **before** the phase named; batch fixes into one `docs:` spec PR. Until then, follow this table.
 
+**Reconciled against v9 (spec adopted; rows 1–9 are unchanged and were each re-checked against the v9 text).** v9
+resolves **none** of them, so all nine remain open or as recorded owner decisions:
+
+- **1, 4, 5** (compose location, B0 scope items with no branch, compose-for-Testcontainers): v9 §16.4 and the §17 B0 row
+  are unchanged. v9 §16.5 now lists `b0-7` as "not started, implement docker-compose", but says nothing about *where*
+  the compose file lives, so it does not resolve #1; `b0-7` stays deferred.
+- **2** (`approver_id` vs `resolved_approver_id`): unchanged (§12 vs §7.5). Still ask before B7.
+- **3** (§2 cross-refs to 13.1/13.2): unchanged in v9's §2 table. Still cosmetic; use §13.2 / §13.3.
+- **6, 7, 8** (page-size cap, RFC 7807 wording and `your-domain`, `b0-4` naming): unchanged; the recorded `b0-3` owner
+  decisions still stand.
+- **9** (`/actuator/health` as liveness): unchanged in v9 §16.4 and §22. The `b0-4` owner-approved deviation stands (the
+  spec text is still to be corrected).
+
+Rows 10–13 are new inconsistencies **inside v9 itself** (or between v9 and the repository), found while reconciling.
+
 | # | Issue | Resolve before | Working assumption until resolved |
 |---|-------|----------------|-----------------------------------|
 | 1 | `docker-compose.yml` location: §16.4 says `peoplehub-infra`; §17 B0 says this repo (`b0-7`) and includes a frontend container that doesn't exist until F0 | `b0-7` | **Deferred.** Do not start `b0-7`. |
@@ -402,6 +526,10 @@ Resolve each **before** the phase named; batch fixes into one `docs:` spec PR. U
 | 7 | §13 says "RFC 7807"; RFC 9457 obsoletes it with the same shape. §9.2 still has the `your-domain` placeholder, so no real base URL exists for problem `type` | decided in `b0-3` (owner approved) | Cite RFC 9457; `type` and `instance` are URNs (`urn:peoplehub:problem:*`, `urn:peoplehub:request:*`). |
 | 8 | §17 names `b0-4` "logging-validation-observability", but the RFC 7807 error body needs a correlation id and the validation `@ControllerAdvice`, both required by `b0-3`'s pagination errors | decided in `b0-3` (owner approved) | Correlation-id filter and `GlobalExceptionHandler` live in `b0-3`; `b0-4` adds JSON logging, actor id, request log, Sentry, actuator on top. |
 | 9 | §16.4 names `/actuator/health` as the liveness endpoint, but Spring Boot's aggregate `/actuator/health` includes the database and Redis, so using it for restarts would let a DB/Redis blip restart the container | decided in `b0-4` (owner approved, D1) | Liveness is `/actuator/health/liveness`, readiness (adds DB + Redis) is `/actuator/health/readiness`; the Dockerfile health check uses liveness. Spec text to be corrected in the next spec PR. |
+| 10 | v9's header checkpoint and §16.5 table are **stale for the repository**: they say `b0-5` is "implemented locally, **not yet committed**" and the `b0-4` docs PR is "awaiting manual merge". Both are done (b0-4 docs PR #5, b0-5 PR #6). They also describe the 5s as a "second shutdown wait", whereas the measured behaviour is an unwind allowance for an interrupted job (`await-termination: false`; see "B0-5 decisions") | next spec PR | This file's status line and "B0-5 decisions" describe the real state; do not "re-do" b0-5 because of v9's checkpoint wording. |
+| 11 | v9 §13.3 (last bullet) still says a multi-tenant future is "currently out of scope, Section 1", which contradicts D21, §1 and §2.1 (multi-organization is in scope) | next spec PR | Multi-organization is in scope (D21–D30); cache keys are organization-scoped. |
+| 12 | Tenant key naming: §12's base tables (`department`, `employee`, `calendar_event`, `month_lock`, `leave_type`) write `org_id`, while §2.1.1/§12.1 use `organization_id` and §13.3 writes `orgId` | before `b2-1` | Treat all as the same tenant key; **confirm the exact column name with the owner before creating the tenant schema.** |
+| 13 | v9 §16.5 lets `b0-6` add `organization_id` "forward-compatibly", and §12.1 says audit rows carry it, but no `organization` table exists until B2 | before `b0-6` | **Unresolved: must be decided during `b0-6` planning, before the audit migration is created.** Evaluate the options (nullable column, absent until B2, or another forward-compatible design) against v9 first; ask the owner. Do not implement B2 early. |
 
 ## 16. Never do
 
@@ -411,4 +539,7 @@ Resolve each **before** the phase named; batch fixes into one `docs:` spec PR. U
 - Add `beforeunload`-style or client-driven auto check-out; end a session for any reason not in R3.
 - Log PII, commit secrets, or add an unvalidated write endpoint or an unpaginated list endpoint.
 - Cache open sessions, balances, `attendance_day`, or the live dashboard.
-- Implement work from a later phase, or change scope without a spec update.
+- Implement work from a later phase, or change scope without a spec update. In particular, do not build B2/F1
+  organization-bootstrap, tenancy, login or invitation functionality inside B0 (v9 §16.5).
+- From B2: accept an `organization_id` (or any tenant selector) from a client, answer "forbidden" instead of "not found"
+  for another tenant's object, or reveal that an organization or account exists.
