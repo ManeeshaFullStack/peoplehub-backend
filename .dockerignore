@@ -1,0 +1,32 @@
+# Build context for the backend image (Dockerfile). Keep it small and never send secrets to the daemon.
+# Anything not listed here can be copied into an image layer, so this list is a security control, not just an
+# optimisation.
+
+# Version control and CI
+.git
+.github
+.gitattributes
+.gitignore
+.gitleaksignore
+
+# Secrets and local environment: never in an image (Spec 15, 16.4)
+.env
+.env.*
+*.env
+!.env.example
+
+# Local tooling and generated output
+.idea
+.vscode
+target
+docker-data
+.docker
+
+# Compose files and their scripts: not part of the image
+docker-compose*.yml
+compose*.yml
+docker
+
+# Tests and docs are not needed to build the jar (tests run in CI)
+src/test
+*.md

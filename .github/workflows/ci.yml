@@ -1,6 +1,8 @@
 name: CI
 
 # Required checks for branch protection on `main` (Spec 16.2): `build` and `secret-scan`.
+# `compose-smoke` (B0-7) is deliberately NOT a required check yet; the owner decides when it becomes one, in GitHub's
+# branch protection settings.
 # SAST, dependency scan, SBOM and the OpenAPI breaking-change check are queued follow-ups (see CLAUDE.md).
 
 on:
@@ -75,3 +77,21 @@ jobs:
       # .gitleaksignore (never path-wide allowlists). --redact keeps any finding out of the CI log.
       - name: Scan git history for secrets
         run: ./gitleaks git --redact --verbose --no-banner --exit-code 1 .
+
+  # Builds the backend image and boots the development stack (docker-compose.yml) from empty volumes, then checks what a
+  # deployment must get right: healthy services, the two database roles (the runtime role cannot change the audit log),
+  # hardening and limits on every container, loopback-only ports, restart on an existing volume, and graceful shutdown
+  # within the 90s stop grace period. The logic is docker/smoke.sh, which also runs on a developer's machine. Not a
+  # required check yet (see the note at the top of this file).
+  compose-smoke:
+    name: compose-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The script generates random throwaway secrets, uses its own compose project and ports, and tears everything
+      # down (also on failure, after printing the container logs). Nothing here is a real credential.
+      - name: Compose smoke test
+        run: bash docker/smoke.sh
