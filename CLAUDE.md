@@ -51,10 +51,10 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 - Current status: **b0-1, b0-2 and b0-3 are merged; their code is in the baseline commit** (the individual merge
   commits no longer exist). **b0-4 is merged** (logging, request log, Sentry, health probes, graceful shutdown; PR #4).
   **b0-5 is merged** (ShedLock scheduler, `JobRunner`, V2 lock table; PR #6). **b0-6 is merged** (V3 `audit_log`,
-  append-only trigger, two DB roles, `AuditWriter`; PR #8). **b0-7
+  append-only trigger, two DB roles, `AuditWriter`; PR #8). **b0-7 is merged**
   (`feature/b0-7-docker-compose`: `Dockerfile`, backend development `docker-compose.yml`, `docker/smoke.sh`, CI job
-  `compose-smoke`) is implemented on its branch and awaiting review; it is not merged.** The master spec is **v9**; its
-  own §16.5 checkpoint is stale for b0-4/b0-5/b0-6 (see §15 item 10). Update this line when a phase merges.
+  `compose-smoke`; PR #9). **B0 Foundation complete: b0-1 through b0-7 merged and verified.** The master spec is **v9**;
+  its own §16.5 checkpoint is stale for b0-4/b0-5/b0-6 (see §15 item 10). Update this line when a phase merges.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15 item 12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
@@ -655,7 +655,7 @@ policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-sch
   `b0-7-docker-compose` (each prefixed with a `<type>/`).
 - **B0 exit criteria:** CI green; sample migration; OpenAPI published; audit table rejects UPDATE/DELETE;
   `docker compose up` boots the stack; a deliberately bad request returns a field-level RFC 7807 error.
-- **B0 progress:** `b0-1` … `b0-6` merged; `b0-7` implemented on its branch, awaiting review (not merged). v9 (§16.5)
+- **B0 progress:** B0 Foundation complete: b0-1 through b0-7 merged and verified (b0-7 via PR #9). v9 (§16.5)
   says to continue from this actual state and not to rebuild merged work. The B0 exit criterion "audit table rejects
   UPDATE/DELETE" is demonstrated by `AuditLogMigrationTest.auditTableRejectsUpdateAndDelete` (and again, through the
   running stack, by `docker/smoke.sh`); "`docker compose up` boots the stack" by `docker/smoke.sh`. **Still needing final
