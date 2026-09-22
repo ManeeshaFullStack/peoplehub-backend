@@ -37,6 +37,17 @@ spring:
       timeout: 2s
       connect-timeout: 2s
 
+  # Plain SMTP (Spec 9.2, b1-2): host/port default to Mailpit's usual local port so
+  # ./mvnw spring-boot:test-run and every test keep needing NO environment variables (matching
+  # .env.example's own promise) and so the JavaMailSender bean always exists -- without a resolved
+  # spring.mail.host, Spring Boot does not create one, and every bean depending on it would fail to
+  # wire. Only host/port get a default: authentication and STARTTLS stay off unless the environment
+  # sets SPRING_MAIL_USERNAME / SPRING_MAIL_PASSWORD / SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE
+  # (Brevo's SMTP relay in production). No provider-specific configuration lives here.
+  mail:
+    host: ${SPRING_MAIL_HOST:localhost}
+    port: ${SPRING_MAIL_PORT:1025}
+
   lifecycle:
     # [confirm] The spec gives no number: 30s is a default, not an approved value. Override per
     # environment with SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE. Each shutdown phase (web server,
@@ -127,6 +138,32 @@ peoplehub:
     # any job using the default; the spec gives no number, so 10 minutes is a default, not an
     # approved value. Override with PEOPLEHUB_SCHEDULING_DEFAULT_LOCK_AT_MOST_FOR.
     default-lock-at-most-for: PT10M
+
+  # Email outbox processor (Spec 9.2, b1-2): EmailOutboxProcessorJob / EmailOutboxProcessor. All
+  # [confirm] -- approved defaults for now, not confirmed production values.
+  email:
+    outbox:
+      # How often the processor looks for due rows (ISO-8601 or a plain duration like "30s").
+      interval: 30s
+      # At most this many due rows per run, so one run stays short and predictable.
+      batch-size: 100
+      # This job's own ShedLock timeout, shorter than the scheduling default above because it runs
+      # far more often: a stuck run should not hold the lock for 10 minutes.
+      lock-at-most-for: PT2M
+      # A row stuck in SENDING longer than this (only possible if the process crashed mid-send,
+      # since ShedLock prevents a merely slow run from causing it) is reclaimed on the next run.
+      stale-claim-after: PT5M
+    retry:
+      # Comma-separated ISO-8601 delays (Spec 9.2: "3 attempts over minutes"). One initial attempt
+      # plus one retry per delay listed here, so PT1M,PT5M means 3 attempts in total. Override with
+      # PEOPLEHUB_EMAIL_RETRY_DELAYS.
+      delays: PT1M,PT5M
+    # from-address (PEOPLEHUB_EMAIL_FROM_ADDRESS) is REQUIRED, with no default and no placeholder
+    # value: deliberately not declared here at all, the same as spring.datasource.* above -- Spring's
+    # standard relaxed binding exposes the environment variable as peoplehub.email.from-address on
+    # its own, with nothing secret or environment-specific defined in this file. When unset it
+    # resolves to Java null (EmailSendingConfig's own #{null} SpEL fallback, not an empty string),
+    # and SmtpEmailSender refuses to send while it is null or blank. See its Javadoc.
 
 sentry:
   # SENTRY_DSN, SENTRY_ENVIRONMENT and SENTRY_RELEASE come from the environment (see .env.example).

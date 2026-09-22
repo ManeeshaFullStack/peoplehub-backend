@@ -32,6 +32,12 @@ class RuntimePrivilegesTest {
             Map.of(
                     "audit_log", Set.of("SELECT"),
                     "shedlock", Set.of("SELECT", "INSERT", "UPDATE"),
+                    // has_table_privilege only reports UPDATE as a table-level privilege when it is
+                    // granted on every column; V5 grants it on 6 of 12, so it correctly does not
+                    // show
+                    // up here even though emailOutboxUpdateIsGrantedOnExactlyTheSixProcessorColumns
+                    // proves the column-level grant exists (same reasoning already applies to why
+                    // INSERT never appeared here either, above).
                     "email_outbox", Set.of("SELECT"),
                     "flyway_schema_history", Set.of());
 
@@ -54,6 +60,20 @@ class RuntimePrivilegesTest {
      */
     private static final Set<String> EMAIL_OUTBOX_INSERT_COLUMNS =
             Set.of("organization_id", "recipient", "type", "payload");
+
+    /**
+     * b1-2 (V5) grants UPDATE on exactly these six columns -- what {@code EmailOutboxProcessor}
+     * writes. Not organization_id, recipient, type or payload (immutable after creation), and not
+     * id or created_at (database-generated).
+     */
+    private static final Set<String> EMAIL_OUTBOX_UPDATE_COLUMNS =
+            Set.of(
+                    "status",
+                    "attempts",
+                    "next_attempt_at",
+                    "provider_message_id",
+                    "error",
+                    "last_attempt_at");
 
     @Autowired private JdbcTemplate jdbc;
 
@@ -165,22 +185,38 @@ class RuntimePrivilegesTest {
     }
 
     @Test
-    void emailOutboxHasNoUpdateOrReferencesPrivilegeOnAnyColumnYet() {
+    void emailOutboxUpdateIsGrantedOnExactlyTheSixProcessorColumns() {
         for (String column :
                 jdbc.queryForList(
                         "SELECT column_name FROM information_schema.columns"
                                 + " WHERE table_name = 'email_outbox'",
                         String.class)) {
-            for (String privilege : List.of("UPDATE", "REFERENCES")) {
-                Boolean has =
-                        jdbc.queryForObject(
-                                "SELECT has_column_privilege(?, 'public.email_outbox', ?, ?)",
-                                Boolean.class,
-                                ROLE,
-                                column,
-                                privilege);
-                assertThat(has).as(privilege + " on email_outbox." + column).isFalse();
-            }
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.email_outbox', ?, 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on email_outbox." + column)
+                    .isEqualTo(EMAIL_OUTBOX_UPDATE_COLUMNS.contains(column));
+        }
+    }
+
+    @Test
+    void emailOutboxHasNoReferencesPrivilegeOnAnyColumn() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'email_outbox'",
+                        String.class)) {
+            Boolean has =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.email_outbox', ?, 'REFERENCES')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(has).as("REFERENCES on email_outbox." + column).isFalse();
         }
     }
 

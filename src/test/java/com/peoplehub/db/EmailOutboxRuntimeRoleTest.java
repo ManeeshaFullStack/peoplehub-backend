@@ -19,12 +19,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * What the least-privileged runtime role can and cannot do to {@code email_outbox} (b1-1, Spec
+ * What the least-privileged runtime role can and cannot do to {@code email_outbox} (b1-1/b1-2, Spec
  * 9.2), against real PostgreSQL and connected as that role. Mirrors {@code
- * AuditLogRuntimeRoleTest}'s coverage of the equivalent b0-6 role. Unlike {@code audit_log}, the
- * role has no UPDATE here yet: b1-1 ships nothing that transitions a row's status, so that
- * privilege is not granted until the b1-2 processor job needs it (V4's own comments). A rejection
- * here is the database's privilege check: the message says "permission denied".
+ * AuditLogRuntimeRoleTest}'s coverage of the equivalent b0-6 role. Unlike {@code audit_log}, this
+ * table is a mutable queue: V5 (b1-2) grants UPDATE on exactly the six columns {@code
+ * EmailOutboxProcessor} writes, on top of V4's (b1-1) INSERT-only columns. A rejection here is the
+ * database's privilege check: the message says "permission denied".
  */
 @IntegrationTest
 class EmailOutboxRuntimeRoleTest {
@@ -181,14 +181,63 @@ class EmailOutboxRuntimeRoleTest {
     }
 
     @Test
-    void updateDeleteAndTruncateAreAllDeniedForNow() throws SQLException {
-        // Different from shedlock and eventually different from this same table once b1-2 lands:
-        // today nothing in b1-1 needs UPDATE, so it is not granted.
+    void theSixProcessorColumnsCanBeUpdated() throws SQLException {
         UUID org = UUID.randomUUID();
         insertRow(org);
 
-        assertDenied("UPDATE email_outbox SET status = 'SENT'");
-        assertDenied("UPDATE email_outbox SET status = 'SENT' WHERE false");
+        try (PreparedStatement ps =
+                runtime.prepareStatement(
+                        "UPDATE email_outbox SET status = 'SENT', attempts = attempts + 1,"
+                                + " next_attempt_at = now(), provider_message_id = 'm-1',"
+                                + " error = 'SEND_FAILED', last_attempt_at = now()"
+                                + " WHERE organization_id = ?")) {
+            ps.setObject(1, org);
+            assertThat(ps.executeUpdate()).isEqualTo(1);
+        }
+
+        try (PreparedStatement ps =
+                runtime.prepareStatement(
+                        "SELECT status, attempts, provider_message_id, error FROM email_outbox"
+                                + " WHERE organization_id = ?")) {
+            ps.setObject(1, org);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getString("status")).isEqualTo("SENT");
+                assertThat(rs.getInt("attempts")).isEqualTo(1);
+                assertThat(rs.getString("provider_message_id")).isEqualTo("m-1");
+                assertThat(rs.getString("error")).isEqualTo("SEND_FAILED");
+            }
+        }
+    }
+
+    @Test
+    void theFourImmutableColumnsAndCreatedAtCannotBeUpdated() {
+        assertDenied("UPDATE email_outbox SET organization_id = gen_random_uuid()");
+        assertDenied("UPDATE email_outbox SET recipient = 'someone-else@example.com'");
+        assertDenied("UPDATE email_outbox SET type = 'SOMETHING_ELSE'");
+        assertDenied("UPDATE email_outbox SET payload = '{}'::jsonb");
+        assertDenied("UPDATE email_outbox SET created_at = now()");
+    }
+
+    @Test
+    void idCannotBeUpdatedEitherThoughPostgresRefusesItBeforeAnyPrivilegeCheck() {
+        // A GENERATED ALWAYS column refuses an UPDATE the same way it refuses an INSERT without
+        // OVERRIDING (aCallerSuppliedIdIsRejected): the identity rule fires before privileges are
+        // even checked, so this is "428C9", not "permission denied".
+        assertThatThrownBy(
+                        () -> {
+                            try (Statement s = runtime.createStatement()) {
+                                s.execute("UPDATE email_outbox SET id = 999999999");
+                            }
+                        })
+                .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("428C9"));
+    }
+
+    @Test
+    void deleteAndTruncateAreStillDenied() throws SQLException {
+        UUID org = UUID.randomUUID();
+        insertRow(org);
+
         assertDenied("DELETE FROM email_outbox");
         assertDenied("DELETE FROM email_outbox WHERE false");
         assertDenied("TRUNCATE email_outbox");

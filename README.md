@@ -402,6 +402,96 @@ public void changeRole(UUID organizationId, String employeeId, String from, Stri
   trigger blocks everything, so a retention job will need a deliberate owner-level mechanism. Not designed yet; tracked
   in CLAUDE.md.
 
+## Email outbox
+
+`email_outbox` (migrations V4, V5) is a **transactional outbox** (Spec 9.2): a queued email is
+written in the same database transaction as the business change that caused it, so a crash cannot
+lose it. One table serves as both the queue and the send history — its `status`/`attempts` columns
+are the log, there is no separate `email_send_log`. Unlike `audit_log`, this table is deliberately
+**mutable**: it has no append-only trigger.
+
+### Writing (b1-1)
+
+```java
+@Transactional
+public void inviteEmployee(UUID organizationId, String email, String inviteCode) {
+    // ... the invite itself ...
+    emailOutboxWriter.enqueue(
+            EmailMessage.builder(organizationId, email, "EMPLOYEE_INVITED")
+                    .payload(EmailPayload.builder()
+                            .attribute("appName", "PeopleHub")
+                            .attribute("inviteCode", inviteCode)
+                            .build())
+                    .build());
+}
+```
+
+`EmailOutboxWriter.enqueue` is the only write operation: insert-only, `MANDATORY` propagation (same
+shape as `AuditWriter`). `EmailPayload` is built only from scalars (same limits as `AuditDetails`:
+20 attributes, 4096 bytes, tokens only, a secret-looking key cannot carry a value) — never an
+object, map or entity. The organization must be real: never null, never the nil UUID, never a
+placeholder. Nothing calls the writer with real data yet; organizations arrive with B2.
+
+### Sending (b1-2)
+
+`EmailOutboxProcessorJob` is a normal `@Scheduled` + `@SchedulerLock` job (`common/scheduling`'s
+usual shape) wrapping the plain, testable `EmailOutboxProcessor`. Every `peoplehub.email.outbox.interval`
+(default 30s, `[confirm]`) it:
+
+1. Reclaims any row stuck in `SENDING` for longer than `peoplehub.email.outbox.stale-claim-after`
+   (default 5 minutes) — only possible if a previous run's process crashed mid-send, since ShedLock
+   already prevents two instances running this job at once.
+2. Selects up to `peoplehub.email.outbox.batch-size` (default 100) due rows (`idx_email_outbox_due`).
+3. **Claims** each with a conditional `UPDATE ... WHERE status IN ('PENDING','RETRYING')` *before*
+   any network call, so the SMTP attempt never happens inside a held database transaction.
+4. Renders the template, sends via `EmailSender`, and records the outcome.
+
+**Templates** are classpath resources at `email-templates/<TYPE>.txt`: first line is the subject,
+second line blank, the rest is the body, with minimal `{{key}}` substitution from the payload's
+attributes — no templating engine dependency. An unknown `type` or a missing token is a permanent
+failure (`TEMPLATE_ERROR`), never retried: it will not resolve itself.
+
+**Retry/backoff** (Spec 9.2: "3 attempts over minutes"): `peoplehub.email.retry.delays`
+(`PEOPLEHUB_EMAIL_RETRY_DELAYS`, default `PT1M,PT5M`) is an ordered list of delays; one initial
+attempt plus one retry per delay, so the default is 3 attempts in total. The maximum is derived from
+the list's length so it cannot drift from the schedule.
+
+**Failure classification** (`EmailFailureClassifier`) is basic transient-vs-permanent, built only
+from Jakarta Mail's/Spring Mail's own exception vocabulary — **never a provider-specific rule**.
+Authentication failures and messages that could not even be prepared are permanent; a `MailSendException`
+naming an invalid address is permanent; anything else (connection refused, timeout, an unrecognised
+exception) is transient and gets a chance to retry. The `error` column only ever holds one of a
+small closed set of codes (`EmailErrorCode`) — **never the raw exception text**, the same
+message-free discipline `b0-4` established for logs.
+
+**At-least-once delivery, not exactly-once.** If the process crashes after the SMTP call succeeds
+but before the row is marked `SENT`, the row is reclaimed (step 1 above) and sent again on a later
+run. This is a deliberate, accepted trade-off of the outbox pattern, not a defect: guaranteeing
+delivery and guaranteeing no duplicate are not both achievable without a transactional inbox on the
+receiving side.
+
+### SMTP configuration
+
+Plain SMTP via Spring's `JavaMailSender`, configured **only** through `spring.mail.*` properties —
+`SmtpEmailSender` has exactly one code path and never branches on which provider it is talking to.
+
+| Environment | `SPRING_MAIL_HOST` | `SPRING_MAIL_PORT` | Auth / STARTTLS |
+|---|---|---|---|
+| Local (`docker compose`, `./mvnw spring-boot:test-run`) | `mailpit` / `localhost` (default) | `1025` (default) | off |
+| Production (initial target: Brevo's SMTP relay) | `smtp-relay.brevo.com` | `587` | on, via `SPRING_MAIL_USERNAME`/`SPRING_MAIL_PASSWORD`/`SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE` |
+
+`spring.mail.host`/`port` default to Mailpit's usual local port so the `JavaMailSender` bean always
+exists and every test and `spring-boot:test-run` keep needing no environment variables. There is no
+Brevo SDK and no Brevo-specific code anywhere; switching provider is a configuration change only.
+
+`peoplehub.email.from-address` (`PEOPLEHUB_EMAIL_FROM_ADDRESS`) is **required, with no default and
+no fake placeholder sender** (Spec 9.2, "clear sender identity"): it is not declared in
+`application.yml` at all, the same as `spring.datasource.*`, so an unset variable resolves to Java
+`null` (never an empty string standing in for a real address) purely to let the application
+*start* without it. `SmtpEmailSender` refuses to send while it is null or blank, marking the row
+`FAILED` with `CONFIGURATION_ERROR` rather than crashing the process or silently using a placeholder
+address.
+
 ## Git workflow (Spec 16.2)
 
 - Nobody commits to `main`. Every change is a branch, a pull request, then a squash merge.
