@@ -69,6 +69,14 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <!-- Email (Spec 9.2, b1-2): plain SMTP via JavaMailSender, configured entirely from
+             spring.mail.* properties. Mailpit locally, Brevo's SMTP relay (or any other SMTP
+             provider) in production: the same code path either way, no provider SDK. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+
         <!-- Observability (Spec 14.1, 14.2, 16.4): Actuator health/readiness and Micrometer metrics, plus Sentry.
              Structured JSON logging is Spring Boot's built-in support, so it needs no extra dependency. Sentry is
              not managed by the Boot BOM, so its version is pinned here; Dependabot tracks it. The starter does not

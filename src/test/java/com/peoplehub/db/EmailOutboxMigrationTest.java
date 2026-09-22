@@ -147,20 +147,17 @@ class EmailOutboxMigrationTest {
     }
 
     @Test
-    void thereIsNoOrganizationForeignKeyAndNoSecondaryIndex() {
-        // The organization table arrives with B2, which adds the FK. Indexes wait for the reader.
+    void thereIsNoOrganizationForeignKey() {
+        // The organization table arrives with B2, which adds the FK. (V4 itself added no secondary
+        // index either -- "indexes wait for the reader" -- but V5 later did:
+        // EmailOutboxSendingMigrationTest covers the full, current index inventory.)
         Integer foreignKeys =
                 jdbc.queryForObject(
                         "SELECT count(*) FROM pg_constraint"
                                 + " WHERE conrelid = 'email_outbox'::regclass AND contype = 'f'",
                         Integer.class);
-        List<String> indexes =
-                jdbc.queryForList(
-                        "SELECT indexname FROM pg_indexes WHERE tablename = 'email_outbox'",
-                        String.class);
 
         assertThat(foreignKeys).isZero();
-        assertThat(indexes).containsExactly("pk_email_outbox");
     }
 
     // ---- constraints ----

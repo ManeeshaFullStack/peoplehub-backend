@@ -1,0 +1,5 @@
+Welcome to {{appName}}, {{firstName}}!
+
+Hi {{firstName}},
+
+You've been invited to join {{appName}}. Your invite code is {{inviteCode}}.
