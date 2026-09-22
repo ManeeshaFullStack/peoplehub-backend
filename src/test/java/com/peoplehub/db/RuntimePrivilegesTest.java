@@ -45,6 +45,10 @@ class RuntimePrivilegesTest {
                     // appear as a table-level privilege here either.
                     "notification", Set.of("SELECT"),
                     "notification_preference", Set.of("SELECT"),
+                    // b1-4 (V7): SELECT is table-level, INSERT is column-level on (email, reason)
+                    // only (not "since", database-generated), same reasoning as every other table
+                    // above.
+                    "email_suppression", Set.of("SELECT"),
                     "flyway_schema_history", Set.of());
 
     private static final Set<String> AUDIT_INSERT_COLUMNS =
@@ -95,6 +99,9 @@ class RuntimePrivilegesTest {
     /** b1-3 (V6) grants UPDATE on exactly these; the other three are the primary key. */
     private static final Set<String> NOTIFICATION_PREFERENCE_UPDATE_COLUMNS =
             Set.of("email", "in_app");
+
+    /** b1-4 (V7) grants INSERT on exactly these email_suppression columns. Not "since". */
+    private static final Set<String> EMAIL_SUPPRESSION_INSERT_COLUMNS = Set.of("email", "reason");
 
     @Autowired private JdbcTemplate jdbc;
 
@@ -348,6 +355,57 @@ class RuntimePrivilegesTest {
                 jdbc.queryForList(
                         "SELECT unnest(relacl)::text FROM pg_class"
                                 + " WHERE oid = 'public.notification_preference'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void emailSuppressionInsertIsGrantedOnExactlyEmailAndReason() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'email_suppression'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.email_suppression', ?, 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on email_suppression." + column)
+                    .isEqualTo(EMAIL_SUPPRESSION_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(EMAIL_SUPPRESSION_INSERT_COLUMNS).doesNotContain("since");
+    }
+
+    @Test
+    void emailSuppressionHasNoUpdateOrReferencesPrivilegeOnAnyColumn() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'email_suppression'",
+                        String.class)) {
+            for (String privilege : List.of("UPDATE", "REFERENCES")) {
+                Boolean has =
+                        jdbc.queryForObject(
+                                "SELECT has_column_privilege(?, 'public.email_suppression', ?, ?)",
+                                Boolean.class,
+                                ROLE,
+                                column,
+                                privilege);
+                assertThat(has).as(privilege + " on email_suppression." + column).isFalse();
+            }
+        }
+    }
+
+    @Test
+    void emailSuppressionGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.email_suppression'::regclass",
                         String.class);
 
         assertThat(acl).noneMatch(entry -> entry.startsWith("="));

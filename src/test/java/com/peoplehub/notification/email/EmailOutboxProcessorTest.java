@@ -3,6 +3,9 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import jakarta.mail.SendFailedException;
+import jakarta.mail.internet.AddressException;
+import jakarta.mail.internet.InternetAddress;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
@@ -35,15 +38,20 @@ class EmailOutboxProcessorTest {
 
     @Autowired private JdbcClient jdbc;
     @Autowired private JdbcTemplate jdbcTemplate;
+    @Autowired private EmailSuppressionService suppressionService;
 
     private final SettableClock clock = new SettableClock();
 
     // @IntegrationTest does not roll back between test methods (unlike @Transactional tests), and
     // several tests here assert an exact row count / processed count: a row left over from an
-    // earlier test would be silently picked up too. Start every test from an empty table.
+    // earlier test would be silently picked up too. Start every test from an empty table. b1-4 adds
+    // email_suppression to the same cleanup for the same reason: a suppression left over from an
+    // earlier test would make an unrelated later test's "address is not suppressed" assumption
+    // false.
     @BeforeEach
-    void emptyTheOutbox() {
+    void emptyTheOutboxAndSuppressionList() {
         jdbcTemplate.update("DELETE FROM email_outbox");
+        jdbcTemplate.update("DELETE FROM email_suppression");
     }
 
     private EmailOutboxProcessor processor(EmailSender sender) {
@@ -59,7 +67,8 @@ class EmailOutboxProcessorTest {
                 new EmailFailureClassifier(),
                 new RetryPolicy(clock, List.of(Duration.ofMinutes(1), Duration.ofMinutes(5))),
                 100,
-                staleClaimAfter);
+                staleClaimAfter,
+                suppressionService);
     }
 
     private long insertRow(String status, int attempts, Instant nextAttemptAt) {
@@ -176,6 +185,69 @@ class EmailOutboxProcessorTest {
         assertThat(after.get("status")).isEqualTo("FAILED");
         assertThat(after.get("attempts")).isEqualTo(1);
         assertThat(after.get("error")).isEqualTo("AUTHENTICATION_FAILED");
+        // b1-4 decision 4/5: AUTHENTICATION_FAILED is permanent but says nothing about the
+        // recipient address itself -- only ADDRESS_REJECTED suppresses. See the tests below.
+        assertThat(suppressionService.isSuppressed("jane@example.com")).isFalse();
+    }
+
+    // ---- b1-4: ADDRESS_REJECTED suppresses, nothing else does --------------------------------
+
+    @Test
+    void aPermanentAddressRejectedFailureSuppressesTheRecipient() throws AddressException {
+        long id = insertPending();
+        MailSendException addressRejected =
+                new MailSendException(
+                        Map.of(
+                                "jane@example.com",
+                                new SendFailedException(
+                                        "rejected",
+                                        null,
+                                        new InternetAddress[0],
+                                        new InternetAddress[0],
+                                        new InternetAddress[] {
+                                            new InternetAddress("jane@example.com")
+                                        })));
+
+        processor(FakeSender.alwaysFails(addressRejected)).run();
+
+        Map<String, Object> after = row(id);
+        assertThat(after.get("status")).isEqualTo("FAILED");
+        assertThat(after.get("error")).isEqualTo("ADDRESS_REJECTED");
+        assertThat(suppressionService.isSuppressed("jane@example.com")).isTrue();
+    }
+
+    @Test
+    void aTransientFailureThatExhaustsRetriesDoesNotSuppressTheRecipient() {
+        clock.set("2026-03-10T10:00:00Z");
+        long id = insertPending();
+        EmailSender alwaysConnectionFailure =
+                FakeSender.alwaysFails(new MailSendException("could not connect"));
+
+        processor(alwaysConnectionFailure).run(); // attempt 1 -> RETRYING
+        clock.set("2026-03-10T10:02:00Z");
+        processor(alwaysConnectionFailure).run(); // attempt 2 -> RETRYING
+        clock.set("2026-03-10T10:10:00Z");
+        processor(alwaysConnectionFailure).run(); // attempt 3 -> exhausted -> FAILED
+
+        Map<String, Object> after = row(id);
+        assertThat(after.get("status")).isEqualTo("FAILED");
+        assertThat(after.get("error")).isEqualTo("CONNECTION_FAILED");
+        // Transient, even though it eventually exhausted its retries: must never suppress.
+        assertThat(suppressionService.isSuppressed("jane@example.com")).isFalse();
+    }
+
+    @Test
+    void aSuppressedRecipientIsSkippedBeforeRenderingOrSending() {
+        suppressionService.suppress("jane@example.com", SuppressionReason.BOUNCE);
+        long id = insertPending();
+
+        int processed = processor(FakeSender.thatFailsIfCalled()).run();
+
+        assertThat(processed).isEqualTo(1); // claimed and terminated, just never sent
+        Map<String, Object> after = row(id);
+        assertThat(after.get("status")).isEqualTo("FAILED");
+        assertThat(after.get("attempts")).isEqualTo(0); // never actually attempted
+        assertThat(after.get("error")).isEqualTo("SUPPRESSED");
     }
 
     @Test
@@ -228,7 +300,8 @@ class EmailOutboxProcessorTest {
                         new EmailFailureClassifier(),
                         new RetryPolicy(clock, List.of(Duration.ofMinutes(1))),
                         2, // batch size
-                        Duration.ofMinutes(5));
+                        Duration.ofMinutes(5),
+                        suppressionService);
 
         int processed = small.run();
 
