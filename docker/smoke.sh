@@ -180,7 +180,26 @@ expect_equals "Actuator exposes nothing but health (/actuator/metrics is 404)" 4
 check "Mailpit is ready" compose exec -T mailpit /mailpit readyz
 warn_count="$(compose logs --no-color backend 2>&1 | grep -cE '"level":"(WARN|ERROR)"' || true)"
 expect_equals "the backend logged no warnings or errors while starting" 0 "$warn_count"
-first_stamp="$(compose logs --no-color backend 2>&1 | grep -m1 '"@timestamp"' | sed -E 's/.*"@timestamp":"([^"]*)".*/\1/')"
+# Extracted with bash's own regex engine, not an external sed pipeline: a sed dialect/locale
+# difference between a developer's machine and a CI runner is exactly the kind of thing that can make
+# a regex silently stop matching on "another runner" while looking fine locally, and sed then leaves
+# the line unchanged instead of failing loudly. [[ =~ ]] is bash itself, so the same code path runs
+# identically everywhere this script runs.
+timestamp_line="$(compose logs --no-color backend 2>&1 | grep -m1 '"@timestamp"' || true)"
+first_stamp=""
+if [[ "$timestamp_line" =~ \"@timestamp\":\"([^\"]*)\" ]]; then
+    first_stamp="${BASH_REMATCH[1]}"
+fi
+# Regression guard: proves the extraction itself worked (a well-formed ISO-8601 instant), separately
+# from the UTC/"Z" check below. Without this, a future extraction failure could leave first_stamp
+# empty or malformed and "log timestamps are UTC" would just fail with an unhelpful "expected to
+# find: Z" rather than pointing at the actual problem.
+if [[ "$first_stamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+    pass "the @timestamp field was found and looks like an ISO-8601 instant"
+else
+    fail "the @timestamp field was found and looks like an ISO-8601 instant" \
+        "extracted '$first_stamp' from log line: $timestamp_line"
+fi
 expect_contains "log timestamps are UTC" "Z" "$first_stamp"
 
 # ---------------------------------------------------------------------------------------------------------------------
