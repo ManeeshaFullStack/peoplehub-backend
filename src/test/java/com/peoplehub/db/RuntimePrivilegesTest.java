@@ -39,6 +39,12 @@ class RuntimePrivilegesTest {
                     // proves the column-level grant exists (same reasoning already applies to why
                     // INSERT never appeared here either, above).
                     "email_outbox", Set.of("SELECT"),
+                    // Same reasoning as email_outbox: SELECT is table-level (all columns), but
+                    // UPDATE is column-level on a strict subset (notification: just "read";
+                    // notification_preference: just "email"/"in_app"), so it correctly does not
+                    // appear as a table-level privilege here either.
+                    "notification", Set.of("SELECT"),
+                    "notification_preference", Set.of("SELECT"),
                     "flyway_schema_history", Set.of());
 
     private static final Set<String> AUDIT_INSERT_COLUMNS =
@@ -74,6 +80,21 @@ class RuntimePrivilegesTest {
                     "provider_message_id",
                     "error",
                     "last_attempt_at");
+
+    /** b1-3 (V6) grants INSERT on exactly these notification columns. Not id or created_at. */
+    private static final Set<String> NOTIFICATION_INSERT_COLUMNS =
+            Set.of("organization_id", "employee_id", "type", "payload");
+
+    /** b1-3 (V6) grants UPDATE on exactly this one notification column: mark-read. */
+    private static final Set<String> NOTIFICATION_UPDATE_COLUMNS = Set.of("read");
+
+    /** b1-3 (V6) grants INSERT on all five notification_preference columns (its whole identity). */
+    private static final Set<String> NOTIFICATION_PREFERENCE_INSERT_COLUMNS =
+            Set.of("organization_id", "employee_id", "type", "email", "in_app");
+
+    /** b1-3 (V6) grants UPDATE on exactly these; the other three are the primary key. */
+    private static final Set<String> NOTIFICATION_PREFERENCE_UPDATE_COLUMNS =
+            Set.of("email", "in_app");
 
     @Autowired private JdbcTemplate jdbc;
 
@@ -226,6 +247,107 @@ class RuntimePrivilegesTest {
                 jdbc.queryForList(
                         "SELECT unnest(relacl)::text FROM pg_class"
                                 + " WHERE oid = 'public.email_outbox'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void notificationInsertIsGrantedOnExactlyTheFourWriterColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'notification'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.notification', ?, 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on notification." + column)
+                    .isEqualTo(NOTIFICATION_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(NOTIFICATION_INSERT_COLUMNS).doesNotContain("id", "created_at");
+    }
+
+    @Test
+    void notificationUpdateIsGrantedOnExactlyTheReadColumn() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'notification'",
+                        String.class)) {
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.notification', ?, 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on notification." + column)
+                    .isEqualTo(NOTIFICATION_UPDATE_COLUMNS.contains(column));
+        }
+    }
+
+    @Test
+    void notificationGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.notification'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void notificationPreferenceInsertIsGrantedOnAllFiveColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'notification_preference'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.notification_preference', ?,"
+                                    + " 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on notification_preference." + column)
+                    .isEqualTo(NOTIFICATION_PREFERENCE_INSERT_COLUMNS.contains(column));
+        }
+    }
+
+    @Test
+    void notificationPreferenceUpdateIsGrantedOnlyOnEmailAndInApp() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'notification_preference'",
+                        String.class)) {
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.notification_preference', ?,"
+                                    + " 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on notification_preference." + column)
+                    .isEqualTo(NOTIFICATION_PREFERENCE_UPDATE_COLUMNS.contains(column));
+        }
+    }
+
+    @Test
+    void notificationPreferenceGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.notification_preference'::regclass",
                         String.class);
 
         assertThat(acl).noneMatch(entry -> entry.startsWith("="));
