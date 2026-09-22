@@ -492,6 +492,17 @@ no fake placeholder sender** (Spec 9.2, "clear sender identity"): it is not decl
 `FAILED` with `CONFIGURATION_ERROR` rather than crashing the process or silently using a placeholder
 address.
 
+**SMTP reachability is deliberately not a health check** (`management.health.mail.enabled=false`).
+Adding `spring-boot-starter-mail` makes Spring Boot auto-register a mail health contributor the
+moment a `JavaMailSender` bean exists, and the root `/actuator/health` endpoint aggregates *every*
+registered contributor with no allowlist (unlike liveness/readiness, whose members are the explicit
+list in the "Actuator" section above) -- so an unreachable SMTP server would otherwise drag the
+whole aggregate to `DOWN`/503. That contradicts this project's own health design (D1): only
+dependencies that should actually gate traffic or a restart are health-checked, and a temporarily
+unreachable SMTP server is exactly the kind of transient failure `EmailOutboxProcessor`'s
+retry/backoff already exists to absorb, not an application-health emergency.
+`MailHealthDoesNotAffectOverallHealthTest` proves this against a deliberately unroutable address.
+
 ## Git workflow (Spec 16.2)
 
 - Nobody commits to `main`. Every change is a branch, a pull request, then a squash merge.

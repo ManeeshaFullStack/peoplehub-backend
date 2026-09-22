@@ -109,6 +109,20 @@ management:
         # Readiness = "can it serve traffic": also verifies PostgreSQL and Redis.
         readiness:
           include: readinessState,db,redis
+  health:
+    mail:
+      # Spring Boot auto-registers a mail health contributor the moment spring-boot-starter-mail
+      # sees a JavaMailSender bean (b1-2), and -- unlike liveness/readiness, whose *members* are an
+      # explicit allowlist above -- the root /actuator/health endpoint aggregates every registered
+      # contributor with no such list, so an unreachable SMTP server would drag the whole aggregate
+      # to DOWN/503 (D1: root is the full aggregate). This is disabled on purpose, consistent with
+      # this project's own health design (D1): only dependencies that should actually gate traffic
+      # or a restart are health-checked (db/redis on readiness), and SMTP reachability deliberately
+      # is not one of them -- a temporarily unreachable SMTP server is exactly the kind of transient
+      # failure EmailOutboxProcessor's retry/backoff already exists to absorb (Spec 9.2), not an
+      # application-health emergency. MailHealthDoesNotAffectOverallHealthTest proves this against a
+      # deliberately unreachable host, not by coincidence of what happens to be listening locally.
+      enabled: false
 
 logging:
   structured:
