@@ -20,5 +20,7 @@ public enum EmailErrorCode {
     /** Could not reach the SMTP server (connection/timeout); typically transient. */
     CONNECTION_FAILED,
     /** Any other send failure not classified above. */
-    SEND_FAILED
+    SEND_FAILED,
+    /** The recipient is on the suppression list (b1-4): never attempted, not a real failure. */
+    SUPPRESSED
 }

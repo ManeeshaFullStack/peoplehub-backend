@@ -40,6 +40,7 @@ public class EmailOutboxProcessor {
     private final RetryPolicy retryPolicy;
     private final int batchSize;
     private final Duration staleClaimAfter;
+    private final EmailSuppressionService suppressionService;
 
     public EmailOutboxProcessor(
             JdbcClient jdbc,
@@ -49,7 +50,8 @@ public class EmailOutboxProcessor {
             EmailFailureClassifier classifier,
             RetryPolicy retryPolicy,
             int batchSize,
-            Duration staleClaimAfter) {
+            Duration staleClaimAfter,
+            EmailSuppressionService suppressionService) {
         this.jdbc = jdbc;
         this.clock = clock;
         this.sender = sender;
@@ -58,6 +60,7 @@ public class EmailOutboxProcessor {
         this.retryPolicy = retryPolicy;
         this.batchSize = batchSize;
         this.staleClaimAfter = staleClaimAfter;
+        this.suppressionService = suppressionService;
     }
 
     /**
@@ -115,6 +118,13 @@ public class EmailOutboxProcessor {
 
     private void processOne(long id) {
         Row row = loadRow(id);
+        // b1-4 suppression gate: checked before rendering or sending, so a known-bad address never
+        // even gets a template built for it. Surgical addition to b1-2's own flow -- see
+        // EmailSuppressionService for what feeds this list.
+        if (suppressionService.isSuppressed(row.recipient())) {
+            markFailedWithoutAttempt(id, EmailErrorCode.SUPPRESSED);
+            return;
+        }
         EmailTemplateRenderer.Rendered rendered;
         try {
             rendered = renderer.render(row.type(), row.payloadJson());
@@ -134,15 +144,29 @@ public class EmailOutboxProcessor {
             // SmtpEmailSender throws this before any network call.
             markFailedWithoutAttempt(id, EmailErrorCode.CONFIGURATION_ERROR);
         } catch (MailException e) {
-            handleSendFailure(id, row.attempts(), classifier.classify(e));
+            handleSendFailure(id, row.recipient(), row.attempts(), classifier.classify(e));
         }
     }
 
     private void handleSendFailure(
-            long id, int attemptsBefore, EmailFailureClassifier.Classification classification) {
+            long id,
+            String recipient,
+            int attemptsBefore,
+            EmailFailureClassifier.Classification classification) {
         int attemptsMade = attemptsBefore + 1;
         if (classification.type() == FailureType.PERMANENT
                 || !retryPolicy.hasMoreAttempts(attemptsMade)) {
+            // b1-4: a permanent, address-specific rejection suppresses the recipient so nothing
+            // retries it later either -- but only ADDRESS_REJECTED. A permanent failure for another
+            // reason (for example bad credentials, CONFIGURATION_ERROR's cousin
+            // AUTHENTICATION_FAILED) says nothing about the address itself, and a transient failure
+            // that merely exhausted its retries (classification.type() == TRANSIENT here) must
+            // never
+            // suppress -- that is a temporary problem, not a bad address.
+            if (classification.type() == FailureType.PERMANENT
+                    && classification.code() == EmailErrorCode.ADDRESS_REJECTED) {
+                suppressionService.suppress(recipient, SuppressionReason.ADDRESS_REJECTED);
+            }
             markFailed(id, classification.code());
         } else {
             markRetrying(id, retryPolicy.nextAttemptAt(attemptsMade), classification.code());

@@ -47,7 +47,8 @@ public class EmailSendingConfig {
             EmailFailureClassifier classifier,
             RetryPolicy retryPolicy,
             @Value("${peoplehub.email.outbox.batch-size:100}") int batchSize,
-            @Value("${peoplehub.email.outbox.stale-claim-after:PT5M}") String staleClaimAfter) {
+            @Value("${peoplehub.email.outbox.stale-claim-after:PT5M}") String staleClaimAfter,
+            EmailSuppressionService suppressionService) {
         return new EmailOutboxProcessor(
                 jdbc,
                 clock,
@@ -56,6 +57,7 @@ public class EmailSendingConfig {
                 classifier,
                 retryPolicy,
                 batchSize,
-                Duration.parse(staleClaimAfter));
+                Duration.parse(staleClaimAfter),
+                suppressionService);
     }
 }

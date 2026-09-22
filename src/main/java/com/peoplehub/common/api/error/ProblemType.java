@@ -22,6 +22,10 @@ public enum ProblemType {
     NOT_ACCEPTABLE("not-acceptable", "Not acceptable", HttpStatus.NOT_ACCEPTABLE),
     UNSUPPORTED_MEDIA_TYPE(
             "unsupported-media-type", "Unsupported media type", HttpStatus.UNSUPPORTED_MEDIA_TYPE),
+    // b1-4: the email bounce/complaint webhook is the first endpoint that needs a 401. General
+    // 401/403 handling for authenticated endpoints is still owed from B2 (CLAUDE.md, "Owed from B4
+    // onward"); this entry covers only the webhook's own shared-secret signature check.
+    UNAUTHORIZED("unauthorized", "Authentication failed", HttpStatus.UNAUTHORIZED),
     INTERNAL_ERROR("internal-error", "Unexpected error", HttpStatus.INTERNAL_SERVER_ERROR);
 
     private static final String URN_PREFIX = "urn:peoplehub:problem:";

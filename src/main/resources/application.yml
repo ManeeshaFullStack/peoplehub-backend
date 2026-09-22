@@ -178,6 +178,11 @@ peoplehub:
     # its own, with nothing secret or environment-specific defined in this file. When unset it
     # resolves to Java null (EmailSendingConfig's own #{null} SpEL fallback, not an empty string),
     # and SmtpEmailSender refuses to send while it is null or blank. See its Javadoc.
+    # webhook-secret (PEOPLEHUB_EMAIL_WEBHOOK_SECRET, b1-4) is REQUIRED, with the same "not declared
+    # here, no fake default" treatment as from-address above: an unset variable resolves to Java
+    # null (EmailWebhookController's own #{null} SpEL fallback), and WebhookSignatureVerifier fails
+    # every signature check closed while it is null or blank -- the endpoint stays up, every request
+    # to it is simply rejected as unauthorized, rather than refusing the whole application to start.
 
 sentry:
   # SENTRY_DSN, SENTRY_ENVIRONMENT and SENTRY_RELEASE come from the environment (see .env.example).
