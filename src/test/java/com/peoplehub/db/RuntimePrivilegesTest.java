@@ -32,6 +32,7 @@ class RuntimePrivilegesTest {
             Map.of(
                     "audit_log", Set.of("SELECT"),
                     "shedlock", Set.of("SELECT", "INSERT", "UPDATE"),
+                    "email_outbox", Set.of("SELECT"),
                     "flyway_schema_history", Set.of());
 
     private static final Set<String> AUDIT_INSERT_COLUMNS =
@@ -44,6 +45,15 @@ class RuntimePrivilegesTest {
                     "ip",
                     "correlation_id",
                     "details");
+
+    /**
+     * b1-1 grants INSERT on exactly these email_outbox columns. Not id or created_at
+     * (database-generated), and not status/attempts/next_attempt_at/provider_message_id/error/
+     * last_attempt_at either: nothing in b1-1 writes them, so UPDATE and the rest of INSERT wait
+     * for the b1-2 migration that actually needs them (V4's own comments).
+     */
+    private static final Set<String> EMAIL_OUTBOX_INSERT_COLUMNS =
+            Set.of("organization_id", "recipient", "type", "payload");
 
     @Autowired private JdbcTemplate jdbc;
 
@@ -130,6 +140,58 @@ class RuntimePrivilegesTest {
                         String.class);
 
         // An ACL entry with no grantee before "=" is a grant to PUBLIC.
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void emailOutboxInsertIsGrantedOnExactlyTheFourWriterColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'email_outbox'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.email_outbox', ?, 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on email_outbox." + column)
+                    .isEqualTo(EMAIL_OUTBOX_INSERT_COLUMNS.contains(column));
+        }
+        // The two columns the database generates are the ones it may not supply, same as audit_log.
+        assertThat(EMAIL_OUTBOX_INSERT_COLUMNS).doesNotContain("id", "created_at");
+    }
+
+    @Test
+    void emailOutboxHasNoUpdateOrReferencesPrivilegeOnAnyColumnYet() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'email_outbox'",
+                        String.class)) {
+            for (String privilege : List.of("UPDATE", "REFERENCES")) {
+                Boolean has =
+                        jdbc.queryForObject(
+                                "SELECT has_column_privilege(?, 'public.email_outbox', ?, ?)",
+                                Boolean.class,
+                                ROLE,
+                                column,
+                                privilege);
+                assertThat(has).as(privilege + " on email_outbox." + column).isFalse();
+            }
+        }
+    }
+
+    @Test
+    void emailOutboxGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.email_outbox'::regclass",
+                        String.class);
+
         assertThat(acl).noneMatch(entry -> entry.startsWith("="));
     }
 
