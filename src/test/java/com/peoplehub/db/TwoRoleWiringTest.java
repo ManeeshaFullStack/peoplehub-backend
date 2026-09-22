@@ -232,8 +232,9 @@ class TwoRoleWiringTest {
                     .as("who ran the migrations")
                     .isEqualTo(TestDatabaseRoles.OWNER_ROLE);
             assertThat(scalar(c, "SELECT count(*) FROM flyway_schema_history WHERE success"))
-                    .isEqualTo("3");
-            for (String table : List.of("audit_log", "shedlock", "flyway_schema_history")) {
+                    .isEqualTo("4");
+            for (String table :
+                    List.of("audit_log", "shedlock", "email_outbox", "flyway_schema_history")) {
                 assertThat(
                                 scalar(
                                         c,

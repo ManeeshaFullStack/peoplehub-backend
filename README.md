@@ -94,8 +94,8 @@ GRANT CONNECT ON DATABASE peoplehub TO peoplehub_app;
 GRANT USAGE ON SCHEMA public TO peoplehub_app;             -- what it may do to each table comes from the migrations
 ```
 
-If the runtime role is missing, migration `V3` fails at once with `Runtime role "..." does not exist`, and nothing is
-half-applied. Tests and `spring-boot:test-run` provision the roles automatically (`src/test/resources/testcontainers/
+If the runtime role is missing, the first migration that grants it privileges (`V3`, and now `V4`) fails at once with
+`Runtime role "..." does not exist`, and nothing is half-applied. Tests and `spring-boot:test-run` provision the roles automatically (`src/test/resources/testcontainers/
 db-roles.sql`), and use the container's own superuser for both Flyway and the application, except in the tests that prove
 the privilege boundary.
 
