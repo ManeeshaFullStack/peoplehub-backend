@@ -55,9 +55,10 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   (`feature/b0-7-docker-compose`: `Dockerfile`, backend development `docker-compose.yml`, `docker/smoke.sh`, CI job
   `compose-smoke`; PR #9). **B0 Foundation complete: b0-1 through b0-7 merged and verified.** The master spec is **v9**;
   its own §16.5 checkpoint is stale for b0-4/b0-5/b0-6 (see §15 item 10). Update this line when a phase merges.
-- **B1 status:** b1-1, b1-2 and b1-3 are merged (Email & notification platform: outbox foundation,
-  templates/retry/sending, in-app notifications + SSE; PRs #11, #12, #13). b1-4 (bounce/suppression)
-  is not yet started. See §13 for the branch-by-branch detail.
+- **B1 status:** b1-1, b1-2, b1-3 and b1-4 are merged (Email & notification platform: outbox
+  foundation, templates/retry/sending, in-app notifications + SSE, bounce/complaint suppression;
+  PRs #11, #12, #13, #15). **B1 (Email & notification platform) complete.** See §13 for the
+  branch-by-branch detail.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15 item 12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
@@ -668,7 +669,8 @@ policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-sch
 - **B1 branches:** `b1-1-email-service-outbox` · `b1-2-templates-retry-log` · `b1-3-inapp-sse` ·
   `b1-4-bounce-suppression` (each prefixed with a `<type>/`; the merged branches used slightly
   adapted slugs -- `feature/b1-1-email-service-outbox`, `feature/b1-2-templates-retry-email-sending`,
-  `feature/b1-3-inapp-sse` -- see "B1 progress" below for what each one actually contains).
+  `feature/b1-3-inapp-sse`, `feature/b1-4-bounce-suppression` -- see "B1 progress" below for what each
+  one actually contains).
 - **B1 exit criteria (§17):** invite mail sent through dev SMTP with retry; failure visible to Admin;
   SSE test passes.
 - **B1 progress:** **b1-1 is merged** (`feature/b1-1-email-service-outbox`: V4 `email_outbox`
@@ -684,8 +686,17 @@ policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-sch
   -- those wait for B2/B3, once a real authenticated principal exists), plus a follow-up fix for a
   `docker/smoke.sh` timestamp-extraction portability bug (an external `sed` dialect difference
   between a developer machine and the CI runner, replaced with bash's own `[[ =~ ]]`); PR #13).
-  **B1 (Email & notification platform) complete through b1-3: b1-1, b1-2 and b1-3 merged and
-  verified.** **b1-4 (bounce/suppression) is not yet started.** Update this line when a phase merges.
+  **b1-4 is merged** (`feature/b1-4-bounce-suppression`: V7 `email_suppression` migration, global by
+  email address with no `organization_id` (a deliberate departure from V4/V6's forward-compatible
+  per-tenant pattern -- a bounced/complained-about address is bad for every tenant), a real,
+  always-active `POST /webhooks/email/events` webhook (unlike b1-1/b1-2/b1-3's deferred/test-only
+  endpoints) authenticated by JDK-native HMAC-SHA256 (no provider SDK), a surgical
+  suppression-check addition to `EmailOutboxProcessor` (only `ADDRESS_REJECTED` permanent failures
+  suppress; transient failures and other permanent reasons such as `AUTHENTICATION_FAILED` never
+  do), and `EmailSuppressionNotifier` built on the b1-3 `NotificationWriter` pipeline but not yet
+  wired to a real caller (no Admin/employee identity exists until B2/B3); PR #15). **B1 (Email &
+  notification platform) complete: b1-1, b1-2, b1-3 and b1-4 merged and verified.** Update this line
+  when a phase merges.
 
 ## 14. Local environment notes
 
