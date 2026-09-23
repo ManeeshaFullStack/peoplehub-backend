@@ -5,20 +5,26 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.TestOrganizations;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Application-layer enforcement of "security-/approval-critical types cannot be fully disabled"
  * (Spec 9.3; b1-3) -- the database's {@code ck_notification_preference_critical_always_on} is the
  * backstop ({@code NotificationMigrationTest}, {@code CriticalNotificationTypesTest}), this is the
  * primary control most callers hit.
+ *
+ * <p>b2-1 (V12) gave {@code notification_preference.organization_id} a real FK, so every test whose
+ * {@code service.set(...)} call actually reaches the database needs a real organization row first.
  */
 @IntegrationTest
 class NotificationPreferenceServiceTest {
 
     @Autowired private NotificationPreferenceService service;
+    @Autowired private JdbcTemplate jdbc;
 
     @Test
     void defaultsToBothChannelsOnWhenNoRowExistsYet() {
@@ -31,7 +37,7 @@ class NotificationPreferenceServiceTest {
 
     @Test
     void anOrdinaryTypeCanHaveEitherChannelDisabled() {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         UUID employee = UUID.randomUUID();
 
         service.set(org, employee, "ORDINARY_TYPE", false, true);
@@ -44,7 +50,7 @@ class NotificationPreferenceServiceTest {
 
     @Test
     void settingBothOnForACriticalTypeIsAllowed() {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         UUID employee = UUID.randomUUID();
 
         assertThatCode(() -> service.set(org, employee, "PASSWORD_RESET", true, true))
@@ -74,7 +80,7 @@ class NotificationPreferenceServiceTest {
 
     @Test
     void settingAPreferenceTwiceUpdatesRatherThanDuplicating() {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         UUID employee = UUID.randomUUID();
 
         service.set(org, employee, "ORDINARY_TYPE", false, true);

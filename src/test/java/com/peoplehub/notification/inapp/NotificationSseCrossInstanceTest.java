@@ -3,6 +3,7 @@ package com.peoplehub.notification.inapp;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.PeopleHubApplication;
+import com.peoplehub.support.TestOrganizations;
 import com.peoplehub.support.TestcontainersConfiguration;
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -21,6 +22,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -85,7 +88,14 @@ class NotificationSseCrossInstanceTest {
     @Test
     void aNotificationWrittenOnOneInstanceReachesAnSseClientStreamingFromAnother()
             throws Exception {
-        UUID org = UUID.randomUUID();
+        // b2-1 (V12): notification.organization_id now has a real FK to organization(id).
+        UUID org =
+                TestOrganizations.insert(
+                        new JdbcTemplate(
+                                new DriverManagerDataSource(
+                                        POSTGRES.getJdbcUrl(),
+                                        POSTGRES.getUsername(),
+                                        POSTGRES.getPassword())));
         UUID employee = UUID.randomUUID();
         LinkedBlockingQueue<String> received = new LinkedBlockingQueue<>();
 

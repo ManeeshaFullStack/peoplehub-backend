@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
+import com.peoplehub.support.TestOrganizations;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -25,6 +27,10 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * table is a mutable queue: V5 (b1-2) grants UPDATE on exactly the six columns {@code
  * EmailOutboxProcessor} writes, on top of V4's (b1-1) INSERT-only columns. A rejection here is the
  * database's privilege check: the message says "permission denied".
+ *
+ * <p>b2-1 (V12) gave {@code organization_id} a real FK, so every test that expects an insert to
+ * succeed needs a real {@code organization} row first, via the superuser-backed {@link
+ * JdbcTemplate} (same pattern {@code AuditLogRuntimeRoleTest} uses).
  */
 @IntegrationTest
 class EmailOutboxRuntimeRoleTest {
@@ -34,6 +40,7 @@ class EmailOutboxRuntimeRoleTest {
                     + " 'SOMETHING_HAPPENED')";
 
     @Autowired private PostgreSQLContainer postgres;
+    @Autowired private JdbcTemplate jdbc;
 
     private Connection runtime;
 
@@ -74,12 +81,12 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void insertSucceeds() throws SQLException {
-        assertThat(insertRow(UUID.randomUUID())).isEqualTo(1);
+        assertThat(insertRow(TestOrganizations.insert(jdbc))).isEqualTo(1);
     }
 
     @Test
     void selectSucceeds() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         insertRow(org);
 
         try (PreparedStatement ps =
@@ -101,7 +108,7 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void theRowIdAndTimeAreGeneratedEvenThoughTheRoleCannotSupplyThem() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         insertRow(org);
         insertRow(org);
 
@@ -182,7 +189,7 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void theSixProcessorColumnsCanBeUpdated() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         insertRow(org);
 
         try (PreparedStatement ps =
@@ -235,7 +242,7 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreStillDenied() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         insertRow(org);
 
         assertDenied("DELETE FROM email_outbox");

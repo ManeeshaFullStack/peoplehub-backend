@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.SqlErrors;
+import com.peoplehub.support.TestOrganizations;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -30,7 +31,8 @@ class EmailOutboxMigrationTest {
     @Autowired private JdbcTemplate jdbc;
 
     private UUID insertRow() {
-        UUID org = UUID.randomUUID();
+        // b2-1 (V12): organization_id now has a real FK to organization(id).
+        UUID org = TestOrganizations.insert(jdbc);
         jdbc.update(INSERT, org, "jane@example.com", "SOMETHING_HAPPENED");
         return org;
     }
@@ -147,17 +149,20 @@ class EmailOutboxMigrationTest {
     }
 
     @Test
-    void thereIsNoOrganizationForeignKey() {
-        // The organization table arrives with B2, which adds the FK. (V4 itself added no secondary
-        // index either -- "indexes wait for the reader" -- but V5 later did:
+    void hasExactlyOneForeignKeyToOrganizationAddedByV12() {
+        // V4 itself created no FK (the organization table did not exist yet, B0-6/1's pattern
+        // reapplied for this table); b2-1's V12 added fk_email_outbox_organization once it did.
+        // (V4 also added no secondary index -- "indexes wait for the reader" -- but V5 later did:
         // EmailOutboxSendingMigrationTest covers the full, current index inventory.)
-        Integer foreignKeys =
-                jdbc.queryForObject(
-                        "SELECT count(*) FROM pg_constraint"
+        // TenantFkRetrofitMigrationTest exercises the V11-to-V12 transition itself, including the
+        // failure case for an orphaned organization_id.
+        List<String> foreignKeyNames =
+                jdbc.queryForList(
+                        "SELECT conname FROM pg_constraint"
                                 + " WHERE conrelid = 'email_outbox'::regclass AND contype = 'f'",
-                        Integer.class);
+                        String.class);
 
-        assertThat(foreignKeys).isZero();
+        assertThat(foreignKeyNames).containsExactly("fk_email_outbox_organization");
     }
 
     // ---- constraints ----
@@ -171,6 +176,22 @@ class EmailOutboxMigrationTest {
                         e ->
                                 assertThat(SqlErrors.sqlState(e))
                                         .isEqualTo(SqlErrors.NOT_NULL_VIOLATION));
+    }
+
+    @Test
+    void anOrganizationIdThatDoesNotResolveToARealOrganizationIsRejectedByTheV12ForeignKey() {
+        // Before b2-1 (V12), any non-nil UUID satisfied the not-nil CHECK below; now
+        // organization_id
+        // must resolve to a real organization.id row.
+        assertThatThrownBy(
+                        () ->
+                                jdbc.update(
+                                        INSERT,
+                                        UUID.randomUUID(),
+                                        "jane@example.com",
+                                        "SOMETHING_HAPPENED"))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("23503"));
     }
 
     @Test
