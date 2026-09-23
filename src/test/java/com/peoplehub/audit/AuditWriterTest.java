@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.peoplehub.common.api.correlation.CorrelationId;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.TestOrganizations;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.util.ArrayList;
@@ -51,7 +52,9 @@ class AuditWriterTest {
     @BeforeEach
     void setUp() {
         tx = new TransactionTemplate(transactionManager);
-        org = UUID.randomUUID();
+        // b2-1 (V12): audit_log.organization_id now has a real FK to organization(id), so a
+        // synthetic UUID.randomUUID() no longer resolves; TestOrganizations inserts a real row.
+        org = TestOrganizations.insert(jdbc);
         ActorId.set("job:audit-writer-test");
         MDC.remove(CorrelationId.MDC_KEY);
     }
@@ -155,7 +158,7 @@ class AuditWriterTest {
     void theActorIsWhoeverTheRequestOrJobContextSays() {
         for (String actor :
                 List.of("anonymous", "SYSTEM", "job:daily-close", UUID.randomUUID().toString())) {
-            UUID organization = UUID.randomUUID();
+            UUID organization = TestOrganizations.insert(jdbc);
             ActorId.set(actor);
 
             append(AuditEvent.builder(organization, "SOMETHING_HAPPENED").build());

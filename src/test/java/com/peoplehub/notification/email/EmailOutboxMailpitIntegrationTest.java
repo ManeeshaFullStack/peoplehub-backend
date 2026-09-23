@@ -3,6 +3,7 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.PeopleHubApplication;
+import com.peoplehub.support.TestOrganizations;
 import com.peoplehub.support.TestcontainersConfiguration;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -92,7 +93,9 @@ class EmailOutboxMailpitIntegrationTest {
         EmailOutboxWriter writer = app.getBean(EmailOutboxWriter.class);
         TransactionTemplate tx =
                 new TransactionTemplate(app.getBean(PlatformTransactionManager.class));
-        UUID org = UUID.randomUUID();
+        JdbcTemplate jdbc = new JdbcTemplate(app.getBean(DataSource.class));
+        // b2-1 (V12): organization_id now has a real FK to organization(id).
+        UUID org = TestOrganizations.insert(jdbc);
         String recipient = "integration-test@example.com";
         EmailMessage message =
                 EmailMessage.builder(org, recipient, "EMPLOYEE_INVITED")
@@ -106,7 +109,6 @@ class EmailOutboxMailpitIntegrationTest {
 
         tx.executeWithoutResult(status -> writer.enqueue(message));
 
-        JdbcTemplate jdbc = new JdbcTemplate(app.getBean(DataSource.class));
         waitUntil(
                 "the outbox row to become SENT",
                 20_000,

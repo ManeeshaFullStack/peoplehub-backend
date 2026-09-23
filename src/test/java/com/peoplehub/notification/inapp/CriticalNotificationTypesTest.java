@@ -3,6 +3,7 @@ package com.peoplehub.notification.inapp;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.TestOrganizations;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -55,10 +56,14 @@ class CriticalNotificationTypesTest {
 
     private boolean accepted(String type, boolean email, boolean inApp) {
         try {
+            // A real organization row: otherwise a FAILED insert here could mean "the FK rejected
+            // a fake org" rather than "the critical-type CHECK rejected this combination", which
+            // would silently break this method's whole purpose for every type that should be
+            // accepted (b2-1, V12; same fix as AuditLogMigrationTest.acceptedByDatabase).
             jdbc.update(
                     "INSERT INTO notification_preference (organization_id, employee_id, type, email,"
                             + " in_app) VALUES (?, ?, ?, ?, ?)",
-                    UUID.randomUUID(),
+                    TestOrganizations.insert(jdbc),
                     UUID.randomUUID(),
                     type,
                     email,

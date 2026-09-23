@@ -11,6 +11,7 @@ import com.peoplehub.audit.AuditWriter;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
+import com.peoplehub.support.TestOrganizations;
 import com.peoplehub.support.TestcontainersConfiguration;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -232,7 +233,7 @@ class TwoRoleWiringTest {
                     .as("who ran the migrations")
                     .isEqualTo(TestDatabaseRoles.OWNER_ROLE);
             assertThat(scalar(c, "SELECT count(*) FROM flyway_schema_history WHERE success"))
-                    .isEqualTo("7");
+                    .isEqualTo("12");
             for (String table :
                     List.of("audit_log", "shedlock", "email_outbox", "flyway_schema_history")) {
                 assertThat(
@@ -263,8 +264,11 @@ class TwoRoleWiringTest {
         JdbcTemplate appJdbc = new JdbcTemplate(context.getBean(DataSource.class));
         TransactionTemplate tx =
                 new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-        UUID org = UUID.randomUUID();
-        UUID rolledBack = UUID.randomUUID();
+        // b2-1 (V12): audit_log.organization_id now has a real FK. The runtime role has INSERT on
+        // organization's (name, login_key_normalized, timezone) since V8, so appJdbc (already
+        // connected as the runtime role in this test) can create the fixture rows itself.
+        UUID org = TestOrganizations.insert(appJdbc);
+        UUID rolledBack = TestOrganizations.insert(appJdbc);
         ActorId.set("job:two-role-test");
         try {
             tx.executeWithoutResult(

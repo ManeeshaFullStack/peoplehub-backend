@@ -27,29 +27,53 @@ class RuntimePrivilegesTest {
     private static final List<String> TABLE_PRIVILEGES =
             List.of("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER");
 
-    /** Table-level privileges the runtime role must have, by table. Absent means none. */
+    /**
+     * Table-level privileges the runtime role must have, by table. Absent means none.
+     *
+     * <p>{@code Map.ofEntries(...)} rather than {@code Map.of(...)}: b2-1 (V8-V11) pushed the table
+     * count past {@code Map.of}'s ten-pair overload limit.
+     */
     private static final Map<String, Set<String>> EXPECTED_TABLE_LEVEL =
-            Map.of(
-                    "audit_log", Set.of("SELECT"),
-                    "shedlock", Set.of("SELECT", "INSERT", "UPDATE"),
+            Map.ofEntries(
+                    Map.entry("audit_log", Set.of("SELECT")),
+                    Map.entry("shedlock", Set.of("SELECT", "INSERT", "UPDATE")),
                     // has_table_privilege only reports UPDATE as a table-level privilege when it is
                     // granted on every column; V5 grants it on 6 of 12, so it correctly does not
                     // show
                     // up here even though emailOutboxUpdateIsGrantedOnExactlyTheSixProcessorColumns
                     // proves the column-level grant exists (same reasoning already applies to why
                     // INSERT never appeared here either, above).
-                    "email_outbox", Set.of("SELECT"),
+                    Map.entry("email_outbox", Set.of("SELECT")),
                     // Same reasoning as email_outbox: SELECT is table-level (all columns), but
                     // UPDATE is column-level on a strict subset (notification: just "read";
                     // notification_preference: just "email"/"in_app"), so it correctly does not
                     // appear as a table-level privilege here either.
-                    "notification", Set.of("SELECT"),
-                    "notification_preference", Set.of("SELECT"),
+                    Map.entry("notification", Set.of("SELECT")),
+                    Map.entry("notification_preference", Set.of("SELECT")),
                     // b1-4 (V7): SELECT is table-level, INSERT is column-level on (email, reason)
                     // only (not "since", database-generated), same reasoning as every other table
                     // above.
-                    "email_suppression", Set.of("SELECT"),
-                    "flyway_schema_history", Set.of());
+                    Map.entry("email_suppression", Set.of("SELECT")),
+                    // b2-1 (V8): SELECT is table-level; INSERT is column-level on (name,
+                    // login_key_normalized, timezone), UPDATE on a different, narrower column set
+                    // (name, timezone, status, onboarding_completed_at, updated_at) -- neither
+                    // covers every column, so neither appears as a table-level privilege here.
+                    Map.entry("organization", Set.of("SELECT")),
+                    // b2-1 (V9): SELECT is table-level; INSERT and UPDATE are both column-level on
+                    // strict subsets (UPDATE is split into four narrow grants across several use
+                    // cases, none covering every column), same reasoning as every table above.
+                    Map.entry("employee", Set.of("SELECT")),
+                    // b2-1 (V10): SELECT is table-level; INSERT and UPDATE are both column-level on
+                    // strict subsets, same reasoning as every table above.
+                    Map.entry("employee_invitation", Set.of("SELECT")),
+                    // b2-1 (V11): three tables, each SELECT table-level with INSERT/UPDATE on
+                    // strict subsets. login_attempt gets no UPDATE grant at all (append-only, its
+                    // own trigger + privilege boundary both enforce this, same defence-in-depth as
+                    // audit_log).
+                    Map.entry("refresh_token", Set.of("SELECT")),
+                    Map.entry("login_attempt", Set.of("SELECT")),
+                    Map.entry("mfa_recovery_code", Set.of("SELECT")),
+                    Map.entry("flyway_schema_history", Set.of()));
 
     private static final Set<String> AUDIT_INSERT_COLUMNS =
             Set.of(
@@ -102,6 +126,92 @@ class RuntimePrivilegesTest {
 
     /** b1-4 (V7) grants INSERT on exactly these email_suppression columns. Not "since". */
     private static final Set<String> EMAIL_SUPPRESSION_INSERT_COLUMNS = Set.of("email", "reason");
+
+    /** b2-1 (V8) grants INSERT on exactly these organization columns. Not id/status/timestamps. */
+    private static final Set<String> ORGANIZATION_INSERT_COLUMNS =
+            Set.of("name", "login_key_normalized", "timezone");
+
+    /**
+     * b2-1 (V8) grants UPDATE on exactly these organization columns. Not id/login_key_normalized.
+     */
+    private static final Set<String> ORGANIZATION_UPDATE_COLUMNS =
+            Set.of("name", "timezone", "status", "onboarding_completed_at", "updated_at");
+
+    /**
+     * b2-1 (V9) grants INSERT on exactly these employee columns. Not id/created_at/updated_at
+     * (database-generated), not password_hash/mfa_enabled/mfa_totp_secret/default_approver_id/
+     * exit_date/welcome_seen_at: no b2-1 code path writes them at insert time.
+     */
+    private static final Set<String> EMPLOYEE_INSERT_COLUMNS =
+            Set.of(
+                    "organization_id",
+                    "department_id",
+                    "employee_code",
+                    "name",
+                    "email",
+                    "email_normalized",
+                    "status",
+                    "role",
+                    "join_date");
+
+    /**
+     * b2-1 (V9) grants UPDATE on exactly these employee columns, across four narrow use-case
+     * grants. employee_code is deliberately absent from every one (immutable by privilege, B0-6/12
+     * discipline); role and email/email_normalized wait for the branch that actually changes them.
+     */
+    private static final Set<String> EMPLOYEE_UPDATE_COLUMNS =
+            Set.of(
+                    "password_hash",
+                    "mfa_enabled",
+                    "mfa_totp_secret",
+                    "status",
+                    "exit_date",
+                    "welcome_seen_at",
+                    "department_id",
+                    "name",
+                    "default_approver_id",
+                    "updated_at");
+
+    /** b2-1 (V10) grants INSERT on exactly these employee_invitation columns. Not id/created_at. */
+    private static final Set<String> EMPLOYEE_INVITATION_INSERT_COLUMNS =
+            Set.of(
+                    "organization_id",
+                    "email_normalized",
+                    "intended_role",
+                    "token_hash",
+                    "inviter_employee_id",
+                    "expires_at");
+
+    /** b2-1 (V10) grants UPDATE on exactly these employee_invitation columns. */
+    private static final Set<String> EMPLOYEE_INVITATION_UPDATE_COLUMNS =
+            Set.of("consumed_at", "revoked_at");
+
+    /** b2-1 (V11) grants INSERT on exactly these refresh_token columns. Not id/created_at. */
+    private static final Set<String> REFRESH_TOKEN_INSERT_COLUMNS =
+            Set.of(
+                    "employee_id",
+                    "token_hash",
+                    "family_id",
+                    "expires_at",
+                    "absolute_expires_at",
+                    "device_label");
+
+    /** b2-1 (V11) grants UPDATE on exactly this one refresh_token column. */
+    private static final Set<String> REFRESH_TOKEN_UPDATE_COLUMNS = Set.of("revoked");
+
+    /**
+     * b2-1 (V11) grants INSERT on exactly these login_attempt columns. Not id/occurred_at
+     * (database-generated). No UPDATE columns at all: append-only, same as audit_log.
+     */
+    private static final Set<String> LOGIN_ATTEMPT_INSERT_COLUMNS =
+            Set.of("organization_login_key_attempted", "email_attempted", "ip", "success");
+
+    /** b2-1 (V11) grants INSERT on exactly these mfa_recovery_code columns. Not id/created_at. */
+    private static final Set<String> MFA_RECOVERY_CODE_INSERT_COLUMNS =
+            Set.of("employee_id", "code_hash");
+
+    /** b2-1 (V11) grants UPDATE on exactly this one mfa_recovery_code column. */
+    private static final Set<String> MFA_RECOVERY_CODE_UPDATE_COLUMNS = Set.of("used_at");
 
     @Autowired private JdbcTemplate jdbc;
 
@@ -406,6 +516,311 @@ class RuntimePrivilegesTest {
                 jdbc.queryForList(
                         "SELECT unnest(relacl)::text FROM pg_class"
                                 + " WHERE oid = 'public.email_suppression'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void organizationInsertIsGrantedOnExactlyNameLoginKeyAndTimezone() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'organization'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.organization', ?, 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on organization." + column)
+                    .isEqualTo(ORGANIZATION_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(ORGANIZATION_INSERT_COLUMNS).doesNotContain("id", "status", "created_at");
+    }
+
+    @Test
+    void organizationUpdateIsGrantedOnExactlyTheFiveMutableColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'organization'",
+                        String.class)) {
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.organization', ?, 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on organization." + column)
+                    .isEqualTo(ORGANIZATION_UPDATE_COLUMNS.contains(column));
+        }
+        assertThat(ORGANIZATION_UPDATE_COLUMNS).doesNotContain("id", "login_key_normalized");
+    }
+
+    @Test
+    void organizationGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.organization'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void employeeInsertIsGrantedOnExactlyTheNineWriterColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'employee'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.employee', ?, 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on employee." + column)
+                    .isEqualTo(EMPLOYEE_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(EMPLOYEE_INSERT_COLUMNS).doesNotContain("id", "created_at", "updated_at");
+    }
+
+    @Test
+    void employeeUpdateIsGrantedOnExactlyTheExpectedColumnsAndNeverEmployeeCode() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'employee'",
+                        String.class)) {
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.employee', ?, 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on employee." + column)
+                    .isEqualTo(EMPLOYEE_UPDATE_COLUMNS.contains(column));
+        }
+        assertThat(EMPLOYEE_UPDATE_COLUMNS)
+                .doesNotContain("id", "employee_code", "organization_id", "created_at");
+    }
+
+    @Test
+    void employeeGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.employee'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void employeeInvitationInsertIsGrantedOnExactlyTheSixWriterColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'employee_invitation'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.employee_invitation', ?,"
+                                    + " 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on employee_invitation." + column)
+                    .isEqualTo(EMPLOYEE_INVITATION_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(EMPLOYEE_INVITATION_INSERT_COLUMNS).doesNotContain("id", "created_at");
+    }
+
+    @Test
+    void employeeInvitationUpdateIsGrantedOnlyOnConsumedAtAndRevokedAt() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'employee_invitation'",
+                        String.class)) {
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.employee_invitation', ?,"
+                                    + " 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on employee_invitation." + column)
+                    .isEqualTo(EMPLOYEE_INVITATION_UPDATE_COLUMNS.contains(column));
+        }
+    }
+
+    @Test
+    void employeeInvitationGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.employee_invitation'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void refreshTokenInsertIsGrantedOnExactlyTheSixWriterColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'refresh_token'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.refresh_token', ?, 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on refresh_token." + column)
+                    .isEqualTo(REFRESH_TOKEN_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(REFRESH_TOKEN_INSERT_COLUMNS).doesNotContain("id", "created_at");
+    }
+
+    @Test
+    void refreshTokenUpdateIsGrantedOnlyOnRevoked() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'refresh_token'",
+                        String.class)) {
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.refresh_token', ?, 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on refresh_token." + column)
+                    .isEqualTo(REFRESH_TOKEN_UPDATE_COLUMNS.contains(column));
+        }
+    }
+
+    @Test
+    void refreshTokenGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.refresh_token'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void loginAttemptInsertIsGrantedOnExactlyTheFourWriterColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'login_attempt'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.login_attempt', ?, 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on login_attempt." + column)
+                    .isEqualTo(LOGIN_ATTEMPT_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(LOGIN_ATTEMPT_INSERT_COLUMNS).doesNotContain("id", "occurred_at");
+    }
+
+    @Test
+    void loginAttemptHasNoUpdatePrivilegeOnAnyColumn() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'login_attempt'",
+                        String.class)) {
+            Boolean has =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.login_attempt', ?, 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(has).as("UPDATE on login_attempt." + column).isFalse();
+        }
+    }
+
+    @Test
+    void loginAttemptGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.login_attempt'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void mfaRecoveryCodeInsertIsGrantedOnExactlyEmployeeIdAndCodeHash() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'mfa_recovery_code'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.mfa_recovery_code', ?,"
+                                    + " 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on mfa_recovery_code." + column)
+                    .isEqualTo(MFA_RECOVERY_CODE_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(MFA_RECOVERY_CODE_INSERT_COLUMNS).doesNotContain("id", "created_at");
+    }
+
+    @Test
+    void mfaRecoveryCodeUpdateIsGrantedOnlyOnUsedAt() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'mfa_recovery_code'",
+                        String.class)) {
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.mfa_recovery_code', ?,"
+                                    + " 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on mfa_recovery_code." + column)
+                    .isEqualTo(MFA_RECOVERY_CODE_UPDATE_COLUMNS.contains(column));
+        }
+    }
+
+    @Test
+    void mfaRecoveryCodeGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.mfa_recovery_code'::regclass",
                         String.class);
 
         assertThat(acl).noneMatch(entry -> entry.startsWith("="));

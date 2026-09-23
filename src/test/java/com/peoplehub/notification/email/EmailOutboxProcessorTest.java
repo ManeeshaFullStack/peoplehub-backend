@@ -3,6 +3,7 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.TestOrganizations;
 import jakarta.mail.SendFailedException;
 import jakarta.mail.internet.AddressException;
 import jakarta.mail.internet.InternetAddress;
@@ -72,7 +73,8 @@ class EmailOutboxProcessorTest {
     }
 
     private long insertRow(String status, int attempts, Instant nextAttemptAt) {
-        UUID org = UUID.randomUUID();
+        // b2-1 (V12): organization_id now has a real FK to organization(id).
+        UUID org = TestOrganizations.insert(jdbcTemplate);
         jdbcTemplate.update(
                 "INSERT INTO email_outbox (organization_id, recipient, type, payload, status,"
                         + " attempts, next_attempt_at)"
@@ -252,7 +254,7 @@ class EmailOutboxProcessorTest {
 
     @Test
     void aTemplateFailureGoesStraightToFailedAndNeverCallsTheSender() {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbcTemplate);
         jdbcTemplate.update(
                 "INSERT INTO email_outbox (organization_id, recipient, type, payload)"
                         + " VALUES (?, 'jane@example.com', 'NO_SUCH_TEMPLATE', '{}'::jsonb)",
@@ -371,7 +373,7 @@ class EmailOutboxProcessorTest {
     }
 
     private long insertRowInStatus(String status, String lastAttemptAt) {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbcTemplate);
         jdbcTemplate.update(
                 "INSERT INTO email_outbox (organization_id, recipient, type, payload, status,"
                         + " last_attempt_at)"

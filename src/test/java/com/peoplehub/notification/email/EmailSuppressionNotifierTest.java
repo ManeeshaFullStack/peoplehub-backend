@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.notification.inapp.NotificationCreatedEvent;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.TestOrganizations;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.event.ApplicationEvents;
 import org.springframework.test.context.event.RecordApplicationEvents;
 import org.springframework.transaction.IllegalTransactionStateException;
@@ -19,6 +21,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  * {@link EmailSuppressionNotifier} against real PostgreSQL (b1-4): proves the capability itself
  * works, using synthetic ids -- the same "nothing calls this with real data yet, but it is fully
  * tested" position {@code NotificationWriterTest} already established for the underlying writer.
+ *
+ * <p>b2-1 (V12) gave the underlying {@code notification.organization_id} a real FK, so the one test
+ * whose write actually reaches the database needs a real organization row first.
  */
 @IntegrationTest
 @RecordApplicationEvents
@@ -27,6 +32,7 @@ class EmailSuppressionNotifierTest {
     @Autowired private EmailSuppressionNotifier notifier;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private ApplicationEvents events;
+    @Autowired private JdbcTemplate jdbc;
 
     private TransactionTemplate tx;
 
@@ -37,7 +43,7 @@ class EmailSuppressionNotifierTest {
 
     @Test
     void notifyAdminWritesANotificationAndPublishesItsCreatedEvent() {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         UUID admin = UUID.randomUUID();
 
         tx.executeWithoutResult(

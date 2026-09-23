@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
+import com.peoplehub.support.TestOrganizations;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -16,12 +17,18 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * What the least-privileged runtime role can and cannot do to {@code notification} and {@code
  * notification_preference} (b1-3, Spec 9, 12), against real PostgreSQL and connected as that role.
  * Mirrors {@code EmailOutboxRuntimeRoleTest}'s coverage of the equivalent b1-1/b1-2 tables.
+ *
+ * <p>b2-1 (V12) gave {@code organization_id} a real FK on both tables, so every test that expects
+ * an insert to succeed needs a real {@code organization} row first, via the superuser-backed {@link
+ * JdbcTemplate}. {@code employee_id} keeps no FK (deliberate, V12's own comments), so it stays a
+ * synthetic UUID.
  */
 @IntegrationTest
 class NotificationRuntimeRoleTest {
@@ -30,6 +37,7 @@ class NotificationRuntimeRoleTest {
             "INSERT INTO notification (organization_id, employee_id, type) VALUES (?, ?, 'SOMETHING_HAPPENED')";
 
     @Autowired private PostgreSQLContainer postgres;
+    @Autowired private JdbcTemplate jdbc;
 
     private Connection runtime;
 
@@ -73,7 +81,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void notificationInsertAndSelectSucceed() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         UUID employee = UUID.randomUUID();
         assertThat(insertNotification(org, employee)).isEqualTo(1);
 
@@ -92,7 +100,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void notificationReadCanBeUpdatedButNoOtherColumn() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         insertNotification(org, UUID.randomUUID());
 
         try (PreparedStatement ps =
@@ -130,7 +138,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void notificationDeleteAndTruncateAreDenied() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         insertNotification(org, UUID.randomUUID());
 
         assertDenied("DELETE FROM notification");
@@ -141,7 +149,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void preferenceInsertSelectAndUpdateSucceed() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         UUID employee = UUID.randomUUID();
         try (PreparedStatement ps =
                 runtime.prepareStatement(
@@ -184,7 +192,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void preferenceDeleteAndTruncateAreDenied() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         UUID employee = UUID.randomUUID();
         try (PreparedStatement ps =
                 runtime.prepareStatement(

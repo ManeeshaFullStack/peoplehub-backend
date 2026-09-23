@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.TestOrganizations;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,7 +39,9 @@ class NotificationWriterTest {
     @BeforeEach
     void setUp() {
         tx = new TransactionTemplate(transactionManager);
-        org = UUID.randomUUID();
+        // b2-1 (V12): notification.organization_id now has a real FK to organization(id).
+        // employee_id has no FK (deliberately not retrofitted; V12's own comments).
+        org = TestOrganizations.insert(jdbc);
         employee = UUID.randomUUID();
     }
 

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.TestOrganizations;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -44,7 +45,8 @@ class EmailOutboxWriterTest {
     @BeforeEach
     void setUp() {
         tx = new TransactionTemplate(transactionManager);
-        org = UUID.randomUUID();
+        // b2-1 (V12): organization_id now has a real FK to organization(id).
+        org = TestOrganizations.insert(jdbc);
     }
 
     private void enqueue(EmailMessage message) {

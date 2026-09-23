@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
+import com.peoplehub.support.TestOrganizations;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -16,12 +17,18 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * What the least-privileged runtime role can and cannot do to {@code audit_log} (B0-6/2, B0-6/4),
  * against real PostgreSQL and connected as that role. A rejection here is the database's privilege
  * check, which comes before the trigger: the message says "permission denied", not "append-only".
+ *
+ * <p>b2-1 (V12) gave {@code organization_id} a real FK, so every test that expects an insert to
+ * succeed needs a real {@code organization} row first -- inserted through the superuser-backed
+ * {@link JdbcTemplate} (the runtime role itself has no INSERT privilege on {@code organization}),
+ * the same pattern {@code EmployeeRuntimeRoleTest} already established.
  */
 @IntegrationTest
 class AuditLogRuntimeRoleTest {
@@ -32,6 +39,7 @@ class AuditLogRuntimeRoleTest {
                     + " 'EMPLOYEE', 'e-1', '203.0.113.7'::inet, 'corr-1', '{\"v\":1}'::jsonb)";
 
     @Autowired private PostgreSQLContainer postgres;
+    @Autowired private JdbcTemplate jdbc;
 
     private Connection runtime;
 
@@ -89,12 +97,12 @@ class AuditLogRuntimeRoleTest {
 
     @Test
     void insertSucceeds() throws SQLException {
-        assertThat(insertRow(UUID.randomUUID())).isEqualTo(1);
+        assertThat(insertRow(TestOrganizations.insert(jdbc))).isEqualTo(1);
     }
 
     @Test
     void selectSucceeds() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         insertRow(org);
 
         try (PreparedStatement ps =
@@ -117,7 +125,7 @@ class AuditLogRuntimeRoleTest {
     void theRowIdAndTimeAreGeneratedEvenThoughTheRoleCannotSupplyThem() throws SQLException {
         // The identity column needs no privilege on its sequence or on `id` for the default to
         // apply.
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         insertRow(org);
         insertRow(org);
 
@@ -174,7 +182,7 @@ class AuditLogRuntimeRoleTest {
 
     @Test
     void updateDeleteAndTruncateAreDenied() throws SQLException {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         insertRow(org);
 
         assertDenied("UPDATE audit_log SET action = 'TAMPERED'");

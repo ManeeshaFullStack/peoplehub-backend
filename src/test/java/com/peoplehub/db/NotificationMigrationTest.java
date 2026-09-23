@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.SqlErrors;
+import com.peoplehub.support.TestOrganizations;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -60,6 +61,22 @@ class NotificationMigrationTest {
     }
 
     @Test
+    void anOrganizationIdThatDoesNotResolveToARealOrganizationIsRejectedByTheV12ForeignKey() {
+        // Before b2-1 (V12), any non-nil UUID satisfied the not-nil CHECK; now organization_id must
+        // resolve to a real organization.id row. employee_id is unaffected: no employee-id FK
+        // retrofit was part of the b2-1 plan (deliberate, see V12's own comments).
+        assertThatThrownBy(
+                        () ->
+                                jdbc.update(
+                                        "INSERT INTO notification (organization_id, employee_id,"
+                                                + " type) VALUES (?, ?, 'X')",
+                                        UUID.randomUUID(),
+                                        UUID.randomUUID()))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("23503"));
+    }
+
+    @Test
     void notificationTypeMustBeUpperSnakeCase() {
         assertThatThrownBy(
                         () ->
@@ -75,7 +92,7 @@ class NotificationMigrationTest {
 
     @Test
     void notificationReadDefaultsToFalseAndCreatedAtIsDatabaseGenerated() {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         jdbc.update(
                 "INSERT INTO notification (organization_id, employee_id, type) VALUES (?, ?, 'X')",
                 org,
@@ -118,19 +135,22 @@ class NotificationMigrationTest {
     }
 
     @Test
-    void notificationHasNoForeignKeyAndNoAppendOnlyTrigger() {
-        Integer foreignKeys =
-                jdbc.queryForObject(
-                        "SELECT count(*) FROM pg_constraint"
+    void notificationHasExactlyOneForeignKeyAddedByV12AndNoAppendOnlyTrigger() {
+        // V6 itself created no FK (neither organization nor employee existed yet); b2-1's V12
+        // added fk_notification_organization once organization did. employee_id deliberately stays
+        // without a FK: an employee-id retrofit was not part of the b2-1 plan (V12's own comments).
+        List<String> foreignKeyNames =
+                jdbc.queryForList(
+                        "SELECT conname FROM pg_constraint"
                                 + " WHERE conrelid = 'notification'::regclass AND contype = 'f'",
-                        Integer.class);
+                        String.class);
         Integer triggers =
                 jdbc.queryForObject(
                         "SELECT count(*) FROM pg_trigger"
                                 + " WHERE tgrelid = 'notification'::regclass AND NOT tgisinternal",
                         Integer.class);
 
-        assertThat(foreignKeys).isZero();
+        assertThat(foreignKeyNames).containsExactly("fk_notification_organization");
         assertThat(triggers).isZero();
     }
 
@@ -138,7 +158,7 @@ class NotificationMigrationTest {
 
     @Test
     void preferenceCompositePrimaryKeyRejectsADuplicateRow() {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         UUID employee = UUID.randomUUID();
         String insert =
                 "INSERT INTO notification_preference (organization_id, employee_id, type)"
@@ -152,7 +172,7 @@ class NotificationMigrationTest {
 
     @Test
     void preferenceDefaultsAreBothChannelsOn() {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         UUID employee = UUID.randomUUID();
         jdbc.update(
                 "INSERT INTO notification_preference (organization_id, employee_id, type)"
@@ -211,12 +231,12 @@ class NotificationMigrationTest {
         jdbc.update(
                 "INSERT INTO notification_preference (organization_id, employee_id, type, email,"
                         + " in_app) VALUES (?, ?, 'ORDINARY_TYPE', false, true)",
-                UUID.randomUUID(),
+                TestOrganizations.insert(jdbc),
                 UUID.randomUUID());
         jdbc.update(
                 "INSERT INTO notification_preference (organization_id, employee_id, type, email,"
                         + " in_app) VALUES (?, ?, 'ORDINARY_TYPE', true, false)",
-                UUID.randomUUID(),
+                TestOrganizations.insert(jdbc),
                 UUID.randomUUID());
     }
 }

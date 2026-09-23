@@ -7,6 +7,7 @@ import com.peoplehub.common.api.correlation.CorrelationId;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.SqlErrors;
+import com.peoplehub.support.TestOrganizations;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.util.List;
@@ -36,7 +37,8 @@ class AuditLogMigrationTest {
     @Autowired private DataSource dataSource;
 
     private UUID insertRow() {
-        UUID org = UUID.randomUUID();
+        // b2-1 (V12): organization_id now has a real FK to organization(id).
+        UUID org = TestOrganizations.insert(jdbc);
         jdbc.update(INSERT, org, "job:test", "SOMETHING_HAPPENED");
         return org;
     }
@@ -129,20 +131,30 @@ class AuditLogMigrationTest {
     }
 
     @Test
-    void thereIsNoOrganizationForeignKeyAndNoSecondaryIndex() {
-        // The organization table arrives with B2, which adds the FK. Indexes wait for the reader.
-        Integer foreignKeys =
-                jdbc.queryForObject(
-                        "SELECT count(*) FROM pg_constraint"
-                                + " WHERE conrelid = 'audit_log'::regclass AND contype = 'f'",
-                        Integer.class);
+    void hasNoSecondaryIndexBeyondThePrimaryKey() {
+        // Indexes wait for the reader (not built yet). The organization_id FK (added by b2-1's
+        // V12, see below) is a constraint, not an index, so it does not change this.
         List<String> indexes =
                 jdbc.queryForList(
                         "SELECT indexname FROM pg_indexes WHERE tablename = 'audit_log'",
                         String.class);
 
-        assertThat(foreignKeys).isZero();
         assertThat(indexes).containsExactly("pk_audit_log");
+    }
+
+    @Test
+    void hasExactlyOneForeignKeyToOrganizationAddedByV12() {
+        // V3 itself created no FK (the organization table did not exist yet, B0-6/1); b2-1's V12
+        // added fk_audit_log_organization once it did. This test documents the current state; V3's
+        // own original "no FK yet" state is exercised historically by
+        // TenantFkRetrofitMigrationTest, which migrates only up to V11 to prove that transition.
+        List<String> foreignKeyNames =
+                jdbc.queryForList(
+                        "SELECT conname FROM pg_constraint"
+                                + " WHERE conrelid = 'audit_log'::regclass AND contype = 'f'",
+                        String.class);
+
+        assertThat(foreignKeyNames).containsExactly("fk_audit_log_organization");
     }
 
     // ---- constraints ----
@@ -155,6 +167,22 @@ class AuditLogMigrationTest {
                         e ->
                                 assertThat(SqlErrors.sqlState(e))
                                         .isEqualTo(SqlErrors.NOT_NULL_VIOLATION));
+    }
+
+    @Test
+    void anOrganizationIdThatDoesNotResolveToARealOrganizationIsRejectedByTheV12ForeignKey() {
+        // Before b2-1 (V12), any non-nil UUID satisfied the not-nil CHECK below; now
+        // organization_id
+        // must resolve to a real organization.id row.
+        assertThatThrownBy(
+                        () ->
+                                jdbc.update(
+                                        INSERT,
+                                        UUID.randomUUID(),
+                                        "job:test",
+                                        "SOMETHING_HAPPENED"))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("23503"));
     }
 
     @Test
@@ -365,7 +393,11 @@ class AuditLogMigrationTest {
 
     private boolean acceptedByDatabase(String column, String value) {
         try {
-            jdbc.update(insertWith(column), UUID.randomUUID(), value);
+            // A real organization row: otherwise a FAILED insert here could mean "the FK rejected
+            // a fake org" rather than "the actor/correlation id CHECK rejected this value", which
+            // would silently break this method's whole purpose for every value that should be
+            // valid.
+            jdbc.update(insertWith(column), TestOrganizations.insert(jdbc), value);
             return true;
         } catch (DataIntegrityViolationException e) {
             return false;
@@ -465,7 +497,7 @@ class AuditLogMigrationTest {
 
     @Test
     void theTriggerMessageCarriesNoRowData() {
-        UUID org = UUID.randomUUID();
+        UUID org = TestOrganizations.insert(jdbc);
         jdbc.update(INSERT, org, "job:secret-looking-actor", "SOMETHING_HAPPENED");
 
         assertThatThrownBy(
