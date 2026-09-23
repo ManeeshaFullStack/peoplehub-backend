@@ -129,8 +129,9 @@ must not be pulled into B0. The requirements to design towards:
 - **Registration / bootstrap (D23, D29, §2.1.3):** only an organization **founder** self-registers (public
   `/register`). Organization + founder are created atomically; the founder is an individual (own company email and
   private password, no shared "superadmin" credentials) and becomes the first `SUPER_ADMIN`. Flow: email verification ->
-  **mandatory MFA** (TOTP + recovery codes) -> first-time organization setup -> the real Super Admin dashboard. No
-  normal session exists before verification; responses are non-enumerating.
+  first-time organization setup -> the real Super Admin dashboard. **MFA is not a mandatory bootstrap step** (owner
+  decision MFA/1, "MFA policy decisions" below; spec §2.1.3 step 6 still says mandatory, §15 item 15). No normal
+  session exists before verification; responses are non-enumerating.
 - **Invitation-only membership (D24, D25, §2.1.5, §3.3):** Employees and additional Admins never sign up publicly. They
   arrive by single-use, expiring email invitations and set their own passwords privately. A Super Admin may promote an
   existing active Employee (step-up protected) **or** invite a new person directly as `ADMIN`. An Admin or Super Admin
@@ -138,8 +139,11 @@ must not be pulled into B0. The requirements to design towards:
 - **Login (D27, §2.1.6, §8.2):** every role uses **Organization + company email + password**; there is no role
   selector. The server resolves the tenant, authenticates inside it, then routes by the stored role. Failure is one
   generic message with timing and rate-limit protection.
-- **MFA (D6, §8.3):** mandatory for Admin and Super Admin (including a directly invited Admin, before first workspace
-  access); optional for Employees.
+- **MFA (owner-approved implementation decision, 2026-09-23; see "MFA policy decisions" below and §15 item 15.
+  `PROJECT_MASTER_SPEC.md` currently contains mandatory MFA requirements and must be updated through a future spec
+  PR before B2-7 starts):** a configurable, organization-level security feature, **disabled by default** after
+  organization creation. Whether MFA is required, and for whom, is the organization's MFA policy, chosen by a Super
+  Admin. Built in `b2-7`, not before.
 - **Deactivation (D26, §2.1.7):** immediately blocks login, refresh, API and SSE access, revokes refresh-token families
   and sessions and device authorization, reassigns pending approvals and closes an open session (`DEACTIVATION`), while
   preserving attendance, leave, approval and audit history. Normal exit is deactivation, not hard delete; D7 tombstoning
@@ -208,6 +212,46 @@ Cite as "B2-2/4" and so on (never a bare `D#`, which is the spec's). Scope: `b2-
 - **B2-2/6 — Email integration.** Uses the existing `EmailOutboxWriter` (b1-1) — never sends directly. Adds one new email `type`: **`ORGANIZATION_VERIFICATION`**, with its own classpath template (the `EmailTemplateRenderer` mechanism already built in `b1-2`).
 - **B2-2/7 — Audit integration.** `b2-2` is `AuditWriter`'s (b0-6) **first real caller** — nothing has invoked it in production code since it was built, by design (B0-6/1: "no production code calls `AuditWriter` yet," acceptable until a real organization id exists). Records organization registration and founder verification through `AuditWriter.append`, inside the same transaction as the business change it describes (the existing `Propagation.MANDATORY` contract), now that `b2-1` gives it a real, non-fabricated organization id to write.
 - **B2-2/8 — Scope boundaries.** **Included:** organization registration, founder employee creation, email verification, verification resend, verification token storage, email sending through the outbox. **Excluded:** login, JWT, refresh tokens, MFA, invitations, onboarding-wizard completion, tenant context, and the full authorization system — all later B2 branches (`b2-3` through `b2-8`), not pulled forward.
+
+### MFA policy decisions (owner-approved 2026-09-23; recorded here so they survive a session or repo reset)
+
+Cite as "MFA/3" and so on (never a bare `D#`, which is the spec's). **Owner-approved implementation decision.
+`PROJECT_MASTER_SPEC.md` currently contains mandatory MFA requirements and must be updated through a future spec PR
+before B2-7 starts.** The affected spec text is D6 ("MFA is mandatory for Admin and Super Admin") and the MFA steps of
+§2.1.3 (step 6), §2.1.5, §3.3, §8.2, §8.3, §15 item 5 and §22.1. The spec is **not** edited here; the conflict is
+recorded as §15 item 15.
+
+- **MFA/1 — MFA is a future, configurable security feature, not a login prerequisite.** No role is forced through MFA
+  enrollment by default: not the founder, not a directly invited Admin, not a promoted Admin. MFA gates login only
+  when the organization's MFA policy (MFA/4) requires it for that user.
+- **MFA/2 — Phase placement.** **`b2-3` does not implement MFA.** `b2-3` implements only password authentication
+  (Organization + company email + password), JWT access tokens, rotating refresh tokens, logout and tenant context.
+  It builds no MFA gate, no restricted "MFA pending" session and no MFA claim-based access rules (this replaces the
+  "restricted session" recommendation, L9, from the B2-3 scope review). **`b2-7` implements MFA.**
+- **MFA/3 — Default: disabled.** A newly created organization starts with MFA policy `DISABLED`.
+- **MFA/4 — Organization MFA policy options** (one per organization, set by a Super Admin, audited as a security
+  settings change):
+  - `DISABLED`
+  - `OPTIONAL`: any user may enroll; nobody is required to.
+  - `REQUIRED_FOR_ADMINS`: required for Admin and Super Admin.
+  - `REQUIRED_FOR_SELECTED_USERS`: required for users a Super Admin explicitly selects.
+  - `REQUIRED_FOR_ALL`: required for every employee.
+
+  Value names are indicative; the exact names, the storage (org setting vs. its own table, and the per-user selection
+  for `REQUIRED_FOR_SELECTED_USERS`) and the grace period for a newly required user are decided in `b2-7`.
+- **MFA/5 — Enable flow.** A Super Admin enables MFA from the security settings (spec §3.2 already makes security
+  settings Super Admin only). The UI shows a clear prompt encouraging activation. Users enroll through an
+  authenticator app.
+- **MFA/6 — Initial method: TOTP authenticator apps.** Existing storage: `employee.mfa_totp_secret` (V9) stores the
+  encrypted TOTP secret; `mfa_recovery_code` (V11) stores the recovery codes separately (hashed). Other methods are
+  out of scope.
+- **MFA/7 — Reminders encourage, never block.** Security reminders encourage users (and Super Admins, for the
+  organization policy) to enable MFA, but **never block login unless the organization's policy requires MFA for that
+  user**.
+- **Open for `b2-7` (not decided here):** how step-up authentication (spec §8.3: "fresh password/MFA within 5
+  minutes") works for a user with no MFA enrolled (password-only re-authentication is the likely reading); whether
+  changing the organization MFA policy itself needs step-up; the enforcement behaviour when a policy change makes MFA
+  required for a user who is already signed in; and who may reset another user's MFA.
 
 ### B0-4 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
 
@@ -561,8 +605,12 @@ shared/production infrastructure is involved; or a Git action needs approval.
 - Access JWT 15 min (in-memory client-side), `kid` key rotation; refresh token rotating in httpOnly Secure SameSite
   cookie, **reuse detection revokes the family**, sliding 30 d + absolute 90 d cap `[confirm]`; CSRF (double-submit +
   Origin) on refresh/logout; locked-down CORS.
-- MFA (TOTP) mandatory for Admin/Super Admin (D6), including a directly invited Admin before first workspace access,
-  and optional for Employees; recovery codes; **step-up auth** for the actions listed in §8.3.
+- MFA (TOTP authenticator apps, recovery codes) is an **organization-configurable policy, disabled by default**
+  (MFA/1–MFA/7 in §2; owner-approved implementation decision. `PROJECT_MASTER_SPEC.md` currently contains mandatory
+  MFA requirements and must be updated through a future spec PR before B2-7 starts; §15 item 15). When the
+  organization's policy requires MFA for a user, it is enforced at login; otherwise reminders encourage it but never
+  block login. Built in `b2-7`, not `b2-3`.
+  **Step-up auth** for the actions listed in §8.3 (its behaviour without MFA is decided in `b2-7`).
 - *From B2 (v9):* login is **Organization + company email + password** for every role with **no role selector** and one
   generic failure message (D27); a deactivated user immediately loses login, refresh, API, SSE and device authority
   while history is preserved (D26); the tenant-isolation gates in spec §15.1 apply. See "v9 adoption" in §2.
@@ -806,6 +854,7 @@ Rows 10–13 are new inconsistencies **inside v9 itself** (or between v9 and the
 | 12 | Tenant key naming: §12's base tables (`department`, `employee`, `calendar_event`, `month_lock`, `leave_type`) write `org_id`, while §2.1.1/§12.1 use `organization_id` and §13.3 writes `orgId` | before `b2-1` | Treat all as the same tenant key; **confirm the exact column name with the owner before creating the tenant schema.** `audit_log` (B0-6/1) already uses `organization_id`; if the owner picks `org_id` for the other tables, that table needs a forward migration to match. |
 | 13 | v9 §16.5 lets `b0-6` add `organization_id` "forward-compatibly", and §12.1 says audit rows carry it, but no `organization` table exists until B2 | before `b0-6` | **B0-6 design resolved; B2 completion pending.** B0-6/1: `audit_log.organization_id UUID NOT NULL`, no FK, no fabricated value ever. B2 still owes: the `organization` table, a matching primary-key type (UUID), the `audit_log` FK, tenant RLS or an equivalent DB defence in depth, and cross-tenant integration tests. Do not implement B2 early. |
 | 14 | §4.9 says comp-off credit is issued **automatically** "when the day is finalized by the nightly job"; this conflicted with a new owner requirement that weekend/holiday work instead create a pending comp-off request needing Admin/Manager approval. Recorded in "Configurable leave, comp-off & weekend policy" (§2) | before `b10-1-credit-on-finalize` | **Owner-approved implementation decision, 2026-09-23: approval-gated, not automatic** (recorded in §2, not a spec edit). `PROJECT_MASTER_SPEC.md` §4.9 still reads "credit is issued when the day is finalized" and **must be corrected through a future `docs:` spec PR before comp-off implementation begins** (§16.2). Until that PR lands, implementation planning for comp-off follows the approved decision recorded in §2. |
+| 15 | Spec D6, §2.1.3 (step 6), §2.1.5, §3.3, §8.2, §8.3, §15 item 5 and §22.1 make MFA **mandatory** for Admin and Super Admin (the founder before first workspace access, a directly invited Admin before first Admin access, a promoted Admin at next login). This conflicts with the owner's decision that MFA is an organization-configurable policy, **disabled by default**. Recorded in "MFA policy decisions" (§2) | before `b2-7-mfa-stepup-onboarding` | **Owner-approved implementation decision, 2026-09-23: configurable, default `DISABLED`** (MFA/1–MFA/7, recorded in §2, not a spec edit). `b2-3` builds no MFA gate. The spec's MFA text **must be corrected through a future `docs:` spec PR before `b2-7` begins** (§16.2). This is a deliberate weakening of spec §15 item 5 ("Mandatory MFA for Admin/Super Admin"), made by the owner; the related launch gates in spec §22.1 (direct Admin invitation and promotion "MFA-enforced") need rewording in the same PR. |
 
 ## 16. Never do
 
