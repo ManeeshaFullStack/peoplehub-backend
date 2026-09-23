@@ -67,6 +67,8 @@ The app reads its connections from environment variables, using Spring's standar
 | `SPRING_FLYWAY_USER`, `SPRING_FLYWAY_PASSWORD`, optional `SPRING_FLYWAY_URL` | Migrations, as the **owner** role (see "Database roles") |
 | `PEOPLEHUB_DB_RUNTIME_ROLE` | Name of the runtime role the migrations grant privileges to (default `peoplehub_app`) |
 | `SPRING_DATA_REDIS_HOST`, `SPRING_DATA_REDIS_PORT`, `SPRING_DATA_REDIS_PASSWORD` | Redis |
+| `PEOPLEHUB_JWT_SIGNING_KEY`, `PEOPLEHUB_JWT_SIGNING_KEY_ID` | Access-token signing key and its id; required (see "Authentication") |
+| `PEOPLEHUB_SECURITY_APP_ORIGIN` | The frontend's origin, for CORS and the Origin check; optional |
 
 The database settings have no defaults (except the role name): a missing one stops startup immediately.
 `spring-boot:test-run` needs none of these. Flyway applies the migrations in `src/main/resources/db/migration` on
@@ -140,7 +142,8 @@ The complete platform compose, with the frontend, moves to infrastructure owners
 file stays the backend-scoped stack, and its project name (`peoplehub-backend-dev`) cannot collide with that one.
 
 ```bash
-cp .env.example .env         # then set the four secrets in the "Docker Compose" section: they have no defaults
+cp .env.example .env         # then set the four secrets in the "Docker Compose" section and the JWT key
+                             # in "Authentication": none of them has a default
 docker compose up --build --wait
 curl http://127.0.0.1:8080/actuator/health/readiness     # {"status":"UP"}
 docker compose down          # keeps the data; add -v to delete it
@@ -198,6 +201,11 @@ src/main/java/com/peoplehub/            # package-by-feature; root package com.p
   common/scheduling/                    # ShedLock config, JobRunner (see "Scheduled jobs")
   common/database/                      # runtime role name guard (see "Database roles")
   audit/                                # append-only audit writer (see "Audit log")
+  security/                             # filter chain, public endpoints, 401/403, CORS, password hashing
+    jwt/                                # ES256 keys, access-token issuing and verification
+    principal/                          # AuthenticatedPrincipal: who is calling, and their tenant
+  auth/                                 # login, refresh, logout (see "Authentication")
+  profile/                              # GET /me
 src/main/resources/
   application.yml                       # non-secret settings only
   application-local.yml                 # `local` profile: readable console, DEBUG (developer machines only)
@@ -254,6 +262,54 @@ class EmployeeController {
   (with limits and allowed sort fields) and the standard error responses. Swagger UI is off by default; enable it
   locally with `SPRINGDOC_SWAGGER_UI_ENABLED=true`, for example
   `SPRINGDOC_SWAGGER_UI_ENABLED=true ./mvnw spring-boot:test-run`, then open `/swagger-ui/index.html`.
+- **Authentication:** every endpoint needs an access token unless it is listed in `security/PublicEndpoints`; see
+  "Authentication" below.
+
+## Authentication
+
+Password login, JWT access tokens and rotating refresh tokens (b2-3; the decisions are "B2-3 decisions" in
+[`CLAUDE.md`](CLAUDE.md)). Not built yet: MFA (b2-7), lockout and password reset (b2-5), sessions list and deactivation
+(b2-6), roles and permissions (b3-1), PostgreSQL row-level security (b2-8).
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/v1/auth/login` | Body `{organization, email, password}`, the same for every role. Returns `{accessToken, tokenType, expiresIn, csrfToken}` and sets the refresh-token and CSRF cookies. Any failure is one generic 401. |
+| `POST /api/v1/auth/refresh` | Rotates the refresh token and returns a new access token and CSRF token. Needs the cookies and `X-CSRF-Token`. |
+| `POST /api/v1/auth/logout` | Ends the current session (its refresh and access tokens stop working immediately). Always 204. Needs `X-CSRF-Token` when a session cookie is sent. |
+| `GET /api/v1/me` | The caller's own profile. |
+
+How a client uses it:
+
+- Keep the **access token** in memory (never in `localStorage`) and send it as `Authorization: Bearer <token>`. It is
+  an ES256 JWT valid for 15 minutes.
+- The **refresh token** lives only in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie (`__Secure-peoplehub_rt`,
+  path `/api/v1/auth`); JavaScript never sees it. A session lasts 30 days after its last refresh, and never more than 90
+  days after login. Refresh one call at a time: the same refresh token used twice is treated as stolen and ends the
+  whole session.
+- Send the **CSRF token** from the last login/refresh response body in `X-CSRF-Token` on refresh and logout.
+- Browsers must call from `PEOPLEHUB_SECURITY_APP_ORIGIN` (CORS and an Origin check). Unset means no browser origin
+  is allowed; clients that send no `Origin` header are not affected.
+- Every 401/403 is the standard problem body, and never says which check failed.
+
+In the code, an authenticated controller receives the caller with `@AuthenticationPrincipal AuthenticatedPrincipal`.
+Its `organizationId` is the only tenant a service may act in: never take an organization id (or the caller's own
+employee id) from the request. It is verified against the database on every request: an employee or organization that
+is no longer `ACTIVE`, or a session that was logged out, is rejected at once. A new endpoint is authenticated by
+default; making one public means adding it to `PublicEndpoints` on purpose, and `SecurityBaselineTest` fails for any
+non-public endpoint that answers without a token.
+
+### Signing keys
+
+The application refuses to start without a valid key. Generate one per environment and never commit it:
+
+```bash
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 | grep -v -- ----- | tr -d '\n'   # PEOPLEHUB_JWT_SIGNING_KEY
+```
+
+Give it an id (`PEOPLEHUB_JWT_SIGNING_KEY_ID`, for example `2026-09`). To rotate: generate a new key with a new id, put
+the old key's **public** half (`openssl pkey -pubout`) in `PEOPLEHUB_JWT_PREVIOUS_PUBLIC_KEYS` as `oldid:PEM`, deploy,
+and remove it again after 15 minutes (one access-token lifetime). Tests and `spring-boot:test-run` generate a throwaway
+key themselves; `docker/smoke.sh` does too.
 
 ## Logging & observability
 

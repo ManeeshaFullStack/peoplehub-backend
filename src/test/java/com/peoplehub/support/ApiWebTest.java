@@ -14,12 +14,13 @@ import org.springframework.test.context.ActiveProfiles;
 /**
  * Web-layer-only test of the API standards against {@link SampleApiController}. Loads just the MVC
  * infrastructure (advice, filters, web config) and the application clock, so it needs neither
- * Docker nor a database and runs in a fraction of a second.
+ * Docker nor a database and runs in a fraction of a second. {@link TestEndpointsSecurityConfig}
+ * keeps the sample endpoints reachable without authentication (b2-3).
  */
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
 @WebMvcTest(SampleApiController.class)
-@Import(TimeConfig.class)
+@Import({TimeConfig.class, TestEndpointsSecurityConfig.class})
 @ActiveProfiles("api-test")
 public @interface ApiWebTest {}

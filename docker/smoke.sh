@@ -44,11 +44,17 @@ native_path() {
 
 secret() { openssl rand -hex 16; }
 
+# A throwaway ES256 signing key (b2-3), as one line of base64 (PKCS#8 DER): the application accepts PEM without its
+# header and footer, and one line fits an env file.
+jwt_signing_key() { openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null | grep -v -- ----- | tr -d '\r\n'; }
+
 cat >"$ENV_FILE" <<EOF
 POSTGRES_BOOTSTRAP_PASSWORD=$(secret)
 PEOPLEHUB_DB_OWNER_PASSWORD=$(secret)
 PEOPLEHUB_DB_RUNTIME_PASSWORD=$(secret)
 REDIS_PASSWORD=$(secret)
+PEOPLEHUB_JWT_SIGNING_KEY=$(jwt_signing_key)
+PEOPLEHUB_JWT_SIGNING_KEY_ID=smoke-key
 PEOPLEHUB_BACKEND_PORT=$BACKEND_PORT
 PEOPLEHUB_MAILPIT_UI_PORT=$MAILPIT_PORT
 EOF
@@ -94,8 +100,10 @@ check() {
 }
 
 # expect_contains "description" "text that must appear" "actual output"
+# Matched by bash itself, not `printf | grep -q`: grep -q exits at the first match, which kills printf with SIGPIPE on
+# large input (a whole startup log), and pipefail then reports the pipeline as failed although the text was found.
 expect_contains() {
-    if printf '%s' "$3" | grep -qF -- "$2"; then pass "$1"; else fail "$1" "expected to find: $2"; fi
+    if [[ "$3" == *"$2"* ]]; then pass "$1"; else fail "$1" "expected to find: $2"; fi
 }
 
 expect_equals() {
@@ -171,12 +179,29 @@ section "Application"
 check "readiness is UP (database and Redis reachable)" wait_ready
 api_docs="$(curl -sS "http://127.0.0.1:$BACKEND_PORT/v3/api-docs" 2>&1 || true)"
 expect_contains "the OpenAPI document is served" '"openapi"' "$api_docs"
+# Deny by default (b2-3): an unauthenticated request to any non-public path, mapped or not, is a 401 problem.
 response="$(curl -sS -i "http://127.0.0.1:$BACKEND_PORT/api/v1/smoke-does-not-exist" 2>&1 | tr -d '\r' || true)"
-expect_contains "an unknown path returns an RFC 9457 problem body" "Content-Type: application/problem+json" "$response"
-expect_contains "the problem body carries a type URN" '"type":"urn:peoplehub:problem:not-found"' "$response"
+expect_contains "an unauthenticated request returns an RFC 9457 problem body" "Content-Type: application/problem+json" "$response"
+expect_contains "the problem body carries a type URN" '"type":"urn:peoplehub:problem:unauthorized"' "$response"
 expect_contains "the response carries a correlation id" "X-Correlation-Id:" "$response"
 metrics="$(curl -s -w '%{http_code}' "http://127.0.0.1:$BACKEND_PORT/actuator/metrics" 2>&1 || true)"
-expect_equals "Actuator exposes nothing but health (/actuator/metrics is 404)" 404 "${metrics: -3}"
+expect_equals "Actuator exposes nothing but health without authentication (/actuator/metrics is 401)" 401 "${metrics: -3}"
+me="$(curl -sS -i "http://127.0.0.1:$BACKEND_PORT/api/v1/me" 2>&1 | tr -d '\r' || true)"
+expect_contains "GET /api/v1/me without a token is a 401" "HTTP/1.1 401" "$me"
+expect_contains "the 401 is an RFC 9457 problem body" '"type":"urn:peoplehub:problem:unauthorized"' "$me"
+bogus_key="smoke-not-a-signing-key-$(secret)"
+bad_start="$(compose run --rm --no-deps -e PEOPLEHUB_JWT_SIGNING_KEY="$bogus_key" backend 2>&1)" && bad_status=0 || bad_status=$?
+if [ "$bad_status" -ne 0 ]; then
+    pass "the backend refuses to start with an invalid signing key (exit $bad_status)"
+else
+    fail "the backend refuses to start with an invalid signing key" "it exited 0"
+fi
+expect_contains "the startup failure points at the signing key loader" "JwtKeySet" "$bad_start"
+if [[ "$bad_start" == *"$bogus_key"* ]]; then
+    fail "the rejected signing key is not echoed in the logs"
+else
+    pass "the rejected signing key is not echoed in the logs"
+fi
 check "Mailpit is ready" compose exec -T mailpit /mailpit readyz
 warn_count="$(compose logs --no-color backend 2>&1 | grep -cE '"level":"(WARN|ERROR)"' || true)"
 expect_equals "the backend logged no warnings or errors while starting" 0 "$warn_count"

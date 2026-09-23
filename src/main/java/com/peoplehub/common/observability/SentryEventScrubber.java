@@ -2,6 +2,7 @@ package com.peoplehub.common.observability;
 
 import com.peoplehub.common.api.correlation.CorrelationId;
 import com.peoplehub.common.logging.ActorId;
+import com.peoplehub.common.logging.OrganizationId;
 import io.sentry.Hint;
 import io.sentry.SentryEvent;
 import io.sentry.SentryOptions;
@@ -23,10 +24,11 @@ import org.springframework.stereotype.Component;
  *
  * <p>An event keeps: the exception type, module, stack frames and mechanism; the log message
  * <em>template</em> (never the formatted text or its arguments, which are where values end up); the
- * correlation id and actor id as tags, which tie it to the logs; level, timestamp, release,
- * environment and SDK information. It loses: exception messages (a Postgres unique violation quotes
- * the offending key), request data (URL, query, headers, cookies, body), user, breadcrumbs, extras,
- * server name, transaction name and every context except runtime, OS and Spring.
+ * correlation id, actor id and organization id as tags, which tie it to the logs; level, timestamp,
+ * release, environment and SDK information. It loses: exception messages (a Postgres unique
+ * violation quotes the offending key), request data (URL, query, headers, cookies, body), user,
+ * breadcrumbs, extras, server name, transaction name and every context except runtime, OS and
+ * Spring.
  *
  * <p>Exceptions are captured from the log record written for them, so this and {@link
  * com.peoplehub.common.logging.MessageFreeStackTracePrinter} enforce the same rule for the two
@@ -35,7 +37,9 @@ import org.springframework.stereotype.Component;
 @Component
 public class SentryEventScrubber implements SentryOptions.BeforeSendCallback {
 
-    static final Set<String> ALLOWED_TAGS = Set.of(CorrelationId.MDC_KEY, ActorId.MDC_KEY);
+    // organizationId: an internal id, allowed for support correlation (Spec 15.1; b2-3, B2-3/18).
+    static final Set<String> ALLOWED_TAGS =
+            Set.of(CorrelationId.MDC_KEY, ActorId.MDC_KEY, OrganizationId.MDC_KEY);
     static final Set<String> ALLOWED_CONTEXTS = Set.of("runtime", "os", "spring");
 
     @Override

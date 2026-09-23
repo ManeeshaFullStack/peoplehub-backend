@@ -152,6 +152,34 @@ peoplehub:
   # ever wanted, is a future org-settings phase, not this one). Override with PEOPLEHUB_APP_NAME.
   app-name: PeopleHub
 
+  # Access tokens (b2-3, B2-3/1-B2-3/4): ES256, signed with a key from the environment.
+  # signing-key (PEOPLEHUB_JWT_SIGNING_KEY, a PKCS#8 PEM EC P-256 private key) and signing-key-id
+  # (PEOPLEHUB_JWT_SIGNING_KEY_ID) are REQUIRED and deliberately not declared here: the application
+  # refuses to start without them (JwtKeySet), there is no fallback key. previous-public-keys
+  # (PEOPLEHUB_JWT_PREVIOUS_PUBLIC_KEYS, comma-separated kid:PEM) keeps tokens signed before a key
+  # rotation valid until they expire. See README, "Authentication".
+  jwt:
+    issuer: peoplehub
+    audience: peoplehub-api
+    access-token-ttl: PT15M
+    # Allowance for clock differences when checking exp/iat.
+    clock-skew: PT30S
+
+  # Sessions (b2-3, B2-3/5): each login is a refresh-token family. Every refresh extends it by the
+  # sliding window, never past the absolute limit fixed at login; then the user signs in again.
+  # Approved by the owner as internal settings, NOT organization-configurable (organization-level
+  # security settings come later). Override with PEOPLEHUB_AUTH_REFRESH_TOKEN_SLIDING_TTL /
+  # PEOPLEHUB_AUTH_REFRESH_TOKEN_ABSOLUTE_TTL; sliding must not exceed absolute.
+  auth:
+    refresh-token:
+      sliding-ttl: P30D
+      absolute-ttl: P90D
+
+  # The browser origin allowed to call the API with credentials (CORS, and the Origin check on
+  # login/refresh/logout; b2-3, B2-3/11). Optional and not declared here: unset means no
+  # cross-origin browser access at all. Set PEOPLEHUB_SECURITY_APP_ORIGIN, e.g.
+  # https://app.example.com.
+
   scheduling:
     # [confirm] How long a job's lock is held if the instance running it dies without releasing it,
     # unless the job's @SchedulerLock says otherwise (ISO-8601). It must exceed the longest run of
@@ -197,8 +225,9 @@ sentry:
   attach-server-name: false
   # No breadcrumbs: log text can carry values, and the correlation id already ties an event to logs.
   max-breadcrumbs: 0
-  # Promote these MDC keys to event tags (the scrubber allowlists exactly these).
-  context-tags: correlationId,actorId
+  # Promote these MDC keys to event tags (the scrubber allowlists exactly these). organizationId is
+  # an internal id, allowed for support correlation (Spec 15.1; b2-3, B2-3/18).
+  context-tags: correlationId,actorId,organizationId
   # Run Sentry's exception resolver last (default: first) so GlobalExceptionHandler answers first.
   # Otherwise every handled 4xx would be reported. Unexpected errors still reach Sentry through the
   # ERROR log record GlobalExceptionHandler writes.

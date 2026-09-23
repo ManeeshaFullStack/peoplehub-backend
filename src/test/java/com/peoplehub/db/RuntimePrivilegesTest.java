@@ -189,9 +189,13 @@ class RuntimePrivilegesTest {
     private static final Set<String> EMPLOYEE_INVITATION_UPDATE_COLUMNS =
             Set.of("consumed_at", "revoked_at");
 
-    /** b2-1 (V11) grants INSERT on exactly these refresh_token columns. Not id/created_at. */
+    /**
+     * b2-1 (V11) and b2-3 (V14, organization_id) grant INSERT on exactly these refresh_token
+     * columns. Not id/created_at, and not the revocation columns (a new token is never revoked).
+     */
     private static final Set<String> REFRESH_TOKEN_INSERT_COLUMNS =
             Set.of(
+                    "organization_id",
                     "employee_id",
                     "token_hash",
                     "family_id",
@@ -199,8 +203,12 @@ class RuntimePrivilegesTest {
                     "absolute_expires_at",
                     "device_label");
 
-    /** b2-1 (V11) grants UPDATE on exactly this one refresh_token column. */
-    private static final Set<String> REFRESH_TOKEN_UPDATE_COLUMNS = Set.of("revoked");
+    /**
+     * b2-1 (V11, revoked) and b2-3 (V14) grant UPDATE on exactly the revocation columns. Never the
+     * token, its family, its expiries or its owner: rotation inserts a new row.
+     */
+    private static final Set<String> REFRESH_TOKEN_UPDATE_COLUMNS =
+            Set.of("revoked", "revoked_at", "revoke_reason", "replaced_by_id");
 
     /**
      * b2-1 (V11) grants INSERT on exactly these login_attempt columns. Not id/occurred_at
@@ -691,7 +699,7 @@ class RuntimePrivilegesTest {
     }
 
     @Test
-    void refreshTokenInsertIsGrantedOnExactlyTheSixWriterColumns() {
+    void refreshTokenInsertIsGrantedOnExactlyTheSevenWriterColumns() {
         for (String column :
                 jdbc.queryForList(
                         "SELECT column_name FROM information_schema.columns"
@@ -711,7 +719,7 @@ class RuntimePrivilegesTest {
     }
 
     @Test
-    void refreshTokenUpdateIsGrantedOnlyOnRevoked() {
+    void refreshTokenUpdateIsGrantedOnlyOnTheRevocationColumns() {
         for (String column :
                 jdbc.queryForList(
                         "SELECT column_name FROM information_schema.columns"

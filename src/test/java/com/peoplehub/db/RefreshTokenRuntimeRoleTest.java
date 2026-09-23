@@ -90,17 +90,18 @@ class RefreshTokenRuntimeRoleTest {
                                         .containsAnyOf("permission denied", "must be owner"));
     }
 
-    private UUID insertToken(UUID employee) throws SQLException {
+    private UUID insertToken(UUID org, UUID employee) throws SQLException {
         try (PreparedStatement ps =
                 runtime.prepareStatement(
-                        "INSERT INTO refresh_token (employee_id, token_hash, family_id,"
-                                + " expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?)"
-                                + " RETURNING id")) {
-            ps.setObject(1, employee);
-            ps.setString(2, "hash-" + UUID.randomUUID());
-            ps.setObject(3, UUID.randomUUID());
-            ps.setTimestamp(4, in(30, ChronoUnit.DAYS));
-            ps.setTimestamp(5, in(90, ChronoUnit.DAYS));
+                        "INSERT INTO refresh_token (organization_id, employee_id, token_hash,"
+                                + " family_id, expires_at, absolute_expires_at)"
+                                + " VALUES (?, ?, ?, ?, ?, ?) RETURNING id")) {
+            ps.setObject(1, org);
+            ps.setObject(2, employee);
+            ps.setString(3, "hash-" + UUID.randomUUID());
+            ps.setObject(4, UUID.randomUUID());
+            ps.setTimestamp(5, in(30, ChronoUnit.DAYS));
+            ps.setTimestamp(6, in(90, ChronoUnit.DAYS));
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 return (UUID) rs.getObject("id");
@@ -113,7 +114,7 @@ class RefreshTokenRuntimeRoleTest {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
 
-        UUID id = insertToken(employee);
+        UUID id = insertToken(org, employee);
 
         try (PreparedStatement ps =
                 runtime.prepareStatement("SELECT revoked FROM refresh_token WHERE id = ?")) {
@@ -145,27 +146,41 @@ class RefreshTokenRuntimeRoleTest {
     }
 
     @Test
-    void revokedCanBeUpdatedButNothingElseCan() throws SQLException {
+    void theRevocationColumnsCanBeUpdatedButNothingElseCan() throws SQLException {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
-        UUID id = insertToken(employee);
+        UUID id = insertToken(org, employee);
+        UUID successor = insertToken(org, employee);
 
+        // Rotation (b2-3, V14): revoke the old token and point it at its successor.
         try (PreparedStatement ps =
-                runtime.prepareStatement("UPDATE refresh_token SET revoked = true WHERE id = ?")) {
-            ps.setObject(1, id);
+                runtime.prepareStatement(
+                        "UPDATE refresh_token SET revoked = true, revoked_at = now(),"
+                                + " revoke_reason = 'ROTATED', replaced_by_id = ? WHERE id = ?")) {
+            ps.setObject(1, successor);
+            ps.setObject(2, id);
             assertThat(ps.executeUpdate()).isEqualTo(1);
         }
 
-        assertDenied("UPDATE refresh_token SET token_hash = 'new' WHERE id = '" + id + "'");
-        assertDenied(
-                "UPDATE refresh_token SET employee_id = gen_random_uuid() WHERE id = '" + id + "'");
+        for (String assignment :
+                new String[] {
+                    "token_hash = 'new'",
+                    "employee_id = gen_random_uuid()",
+                    "organization_id = gen_random_uuid()",
+                    "family_id = gen_random_uuid()",
+                    "expires_at = now()",
+                    "absolute_expires_at = now()",
+                    "device_label = 'x'"
+                }) {
+            assertDenied("UPDATE refresh_token SET " + assignment + " WHERE id = '" + id + "'");
+        }
     }
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
-        insertToken(employee);
+        insertToken(org, employee);
 
         assertDenied("DELETE FROM refresh_token");
         assertDenied("TRUNCATE refresh_token");
@@ -180,9 +195,11 @@ class RefreshTokenRuntimeRoleTest {
                         () -> {
                             try (Statement s = runtime.createStatement()) {
                                 s.execute(
-                                        "INSERT INTO refresh_token (employee_id, token_hash,"
-                                                + " family_id, expires_at, absolute_expires_at)"
-                                                + " VALUES ('"
+                                        "INSERT INTO refresh_token (organization_id,"
+                                                + " employee_id, token_hash, family_id,"
+                                                + " expires_at, absolute_expires_at) VALUES ('"
+                                                + org
+                                                + "', '"
                                                 + employee
                                                 + "', '', gen_random_uuid(),"
                                                 + " now() + interval '30 days',"

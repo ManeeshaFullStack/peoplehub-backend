@@ -22,10 +22,12 @@ public enum ProblemType {
     NOT_ACCEPTABLE("not-acceptable", "Not acceptable", HttpStatus.NOT_ACCEPTABLE),
     UNSUPPORTED_MEDIA_TYPE(
             "unsupported-media-type", "Unsupported media type", HttpStatus.UNSUPPORTED_MEDIA_TYPE),
-    // b1-4: the email bounce/complaint webhook is the first endpoint that needs a 401. General
-    // 401/403 handling for authenticated endpoints is still owed from B2 (CLAUDE.md, "Owed from B4
-    // onward"); this entry covers only the webhook's own shared-secret signature check.
+    // b1-4: first used by the email webhook's shared-secret check. From b2-3 also every failed or
+    // missing authentication (B2-3/12, B2-3/16), always with a generic detail.
     UNAUTHORIZED("unauthorized", "Authentication failed", HttpStatus.UNAUTHORIZED),
+    // b2-3 (B2-3/16): a request that is authenticated but not allowed, or that fails the CSRF or
+    // Origin check on the refresh/logout endpoints.
+    FORBIDDEN("forbidden", "Forbidden", HttpStatus.FORBIDDEN),
     // b2-2: organization registration's own "this identifier is already claimed" signals (the
     // organization name/login key is taken). Not a login/forgot-password/resend oracle -- those
     // stay generic and non-enumerating (D22); this is the requester's own chosen identifier
