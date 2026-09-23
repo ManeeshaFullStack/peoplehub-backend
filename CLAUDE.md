@@ -126,6 +126,8 @@ must not be pulled into B0. The requirements to design towards:
   DB-level policy proven by tests) on tenant-owned tables, with tenant-safe composite keys where practical (for example
   `UNIQUE(organization_id, email_normalized)`). RLS needs a non-owner runtime role, which is consistent with the
   two-DB-role design in §9. This is a **future implementation requirement**, not something to bolt on early.
+  **Placement (owner decision, B2-3/20): RLS is built in `b2-8-tenant-isolation-security-tests`.** `b2-3` only
+  creates the tenant context that RLS will later read.
 - **Registration / bootstrap (D23, D29, §2.1.3):** only an organization **founder** self-registers (public
   `/register`). Organization + founder are created atomically; the founder is an individual (own company email and
   private password, no shared "superadmin" credentials) and becomes the first `SUPER_ADMIN`. Flow: email verification ->
@@ -252,6 +254,122 @@ recorded as §15 item 15.
   minutes") works for a user with no MFA enrolled (password-only re-authentication is the likely reading); whether
   changing the organization MFA policy itself needs step-up; the enforcement behaviour when a policy change makes MFA
   required for a user who is already signed in; and who may reset another user's MFA.
+
+### B2-3 decisions (owner-approved 2026-09-23; recorded here so they survive a session or repo reset)
+
+Cite as "B2-3/4" and so on (never a bare `D#`, which is the spec's). Scope:
+`feature/b2-3-login-jwt-refresh-tenant-context` — password login, JWT access tokens, rotating refresh tokens, logout,
+tenant context, a minimal `/me`, and audit events for those actions. Not yet implemented; this locks the design before
+the branch is created. Spec basis: §2.1.1, §2.1.6, §8.1, §8.2, §13.0, §15, §15.1.
+
+**JWT**
+
+- **B2-3/1 — Algorithm: ES256 only.** The decoder accepts ES256 and nothing else, so `alg=none` and HS/RS
+  algorithm-confusion tokens are rejected.
+- **B2-3/2 — Keys from the environment.** Signing key as a PKCS#8 PEM plus its `kid`
+  (`PEOPLEHUB_JWT_SIGNING_KEY`, `PEOPLEHUB_JWT_SIGNING_KEY_ID`); previous public keys, keyed by `kid`, remain valid for
+  verification during a rotation. The application **fails to start** if the signing key is missing or invalid, and no
+  error or log line ever contains key material. **No JWKS endpoint** in `b2-3`. No private key is committed anywhere:
+  tests and `docker/smoke.sh` generate throwaway keys at run time.
+- **B2-3/3 — Lifetimes.** Access token **15 minutes**; clock-skew allowance **30 seconds**.
+- **B2-3/4 — Claims.** `iss`, `aud`, `sub` (employee id), `org` (organization id), `role`, `sid` (refresh-token family
+  id), `iat`, `exp`, `jti`; `kid` in the header. **No email or name** in the token.
+
+**Refresh tokens**
+
+- **B2-3/5 — Expiry: 30-day sliding window, 90-day absolute maximum.** Configured internally (application config,
+  environment-overridable, validated at startup), **not organization-configurable yet**; organization-level security
+  settings come later. So CLAUDE.md §1.5 ("`[confirm]` values become org settings") does not apply to these two values
+  for now. The absolute limit is fixed when a login creates the family; each refresh sets the sliding expiry to the
+  earlier of now + 30 days and that limit.
+- **B2-3/6 — Storage and hashing.** An opaque random 256-bit token (`SecureTokens`); only its **SHA-256** hash is
+  stored (`refresh_token.token_hash`). It travels in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie scoped to
+  `/api/v1/auth`.
+- **B2-3/7 — Rotation.** Every refresh locks the presented row (`SELECT … FOR UPDATE`), revokes it (reason `ROTATED`,
+  `replaced_by_id` set) and inserts its successor in the same family, in one transaction. Employee and organization
+  must still be `ACTIVE`.
+- **B2-3/8 — Reuse detection.** Presenting an already-revoked token revokes **every** token in its family (reason
+  `REUSE_DETECTED`), is audited, and returns 401. No grace window: two parallel refreshes with the same token end the
+  session, so the client must serialize refreshes.
+- **B2-3/9 — Logout.** Revokes the current session's family (reason `LOGOUT`), clears the cookies and always returns
+  204 (no cookie, unknown cookie or repeated logout included). Logout-all belongs to `b2-6`.
+- **B2-3/10 — Multiple sessions.** Each login is an independent family, with no cap; ending one leaves the others
+  alone. `device_label` stays empty until `b2-6` (sessions list) decides its content.
+- **B2-3/11 — CSRF and Origin.** Refresh and logout require a double-submit CSRF token: returned in the login/refresh
+  response body (the frontend on `app.` cannot read an `api.` cookie, D10) and also set as an `HttpOnly` cookie; the
+  `X-CSRF-Token` header must equal the cookie (constant-time comparison). On login, refresh and logout an `Origin`
+  header, when present, must equal the configured app origin; otherwise 403. CORS allows only that origin, with
+  credentials.
+
+**Authentication behaviour**
+
+- **B2-3/12 — Generic login failure.** Unknown organization, unknown email, wrong password, inactive employee or
+  organization, and no password set all return the **same 401 body** ("We couldn't sign you in with those details.").
+  One Argon2 verification always runs, against a dummy hash when the account does not exist, to keep timing the same.
+  Malformed input is still a 400 validation error.
+- **B2-3/13 — Unverified founders cannot log in** and get the same generic 401 (a specific "verify your email" message
+  would confirm the account exists); resend-verification (b2-2) remains their path.
+- **B2-3/14 — Tenant context.** After ES256 verification, one database check per request confirms the employee and
+  organization are `ACTIVE` and the `sid` family is not revoked (not cached). The result is an
+  `AuthenticatedPrincipal`; its organization id is the **only** tenant source services use, and the role used for
+  authorization is read from the database. Logout and (from `b2-6`) deactivation therefore cut off access tokens
+  immediately (D26).
+- **B2-3/15 — No lockout enforcement in `b2-3`.** Every attempt (success or failure) is recorded in `login_attempt`;
+  lockout/backoff is enforced in `b2-5`, and rate limiting later (as B2-2/3). Client IP is the direct connection
+  address; no forwarded headers are trusted until hosting is decided (§19).
+- **B2-3/16 — 401/403 as RFC 9457 problems.** Both go through the standard problem body with a correlation id (closes
+  the "401/403 must use the same problem body" item owed from B0). A new `FORBIDDEN` problem type covers CSRF, Origin
+  and access-denied failures. 401 details are generic (expired, bad signature and revoked look the same), and
+  `WWW-Authenticate` carries no `error_description`.
+- **B2-3/17 — Audit.** Through `AuditWriter` in the same transaction: `LOGIN_SUCCEEDED`, `LOGOUT`,
+  `REFRESH_TOKEN_REUSE_DETECTED` (target `EMPLOYEE`/id, attribute `sessionId`). Normal rotation is not audited. Failed
+  logins go to `login_attempt` only (B0-6/16).
+- **B2-3/18 — MDC and Sentry.** After authentication `ActorId` becomes the employee id, and the organization id is
+  added to MDC as `organizationId`; the Sentry tag allowlist is extended deliberately to include it, with a test
+  (resolves the "Logging context (B2)" open item in §2).
+
+**Scope**
+
+- **B2-3/19 — Scope.** Endpoints: `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, and a minimal
+  `GET /me` (`id, name, email, role, status, joinDate, organization {name, timezone, onboardingCompleted}`;
+  `firstName`/`welcomeSeenAt` and `department` arrive with their own phases). Authorization is only authenticated or
+  not: **no RBAC, no roles in `@PreAuthorize`, no permission matrix** (`b3-1`). **Excluded:** MFA, TOTP, recovery codes,
+  MFA enrollment/enforcement (`b2-7`, MFA/2), step-up, invitations and activation (`b2-4`), onboarding, password
+  reset/change and lockout (`b2-5`), sessions list, logout-all and deactivation (`b2-6`), leave, attendance, payroll.
+- **B2-3/20 — RLS moves to `b2-8`.** `b2-3` creates only the tenant context (B2-3/14), shaped so that `b2-8` can set a
+  transaction-local tenant setting for RLS policies.
+- **B2-3/21 — Stale status lines are fixed separately.** The status lines that do not yet record `b2-1`/`b2-2` as
+  merged are corrected in their own small documentation change, never mixed into the `b2-3` implementation.
+
+**Implementation plan (for review; details may be refined in the branch without changing the decisions above)**
+
+- **Commits, each followed by `./mvnw -B -ntp verify`:** (1) Spring Security dependency plus a deny-by-default
+  `SecurityFilterChain` (stateless; no form login, HTTP Basic or generated default user; `permitAll` only for
+  `/api/v1/public/**`, the three `/api/v1/auth/*` endpoints, the email webhook, `/actuator/health/**` and API docs;
+  problem-body 401/403; correlation and actor filters before the security chain), then also `docker/smoke.sh`, per the
+  B2 development rules; (2) `V14` migration; (3) JWT keys, issuer, decoder and principal; (4) login, refresh, logout;
+  (5) `/me`, OpenAPI bearer scheme and README, then `verify` and `smoke.sh` on a clean stack.
+- **`V14__refresh_token_rotation.sql`:** add `refresh_token.organization_id` (backfilled from `employee`, then
+  `NOT NULL`); `UNIQUE (organization_id, id)` on `employee` and a composite FK
+  `(organization_id, employee_id) → employee (organization_id, id)` so a token can never point across tenants; add
+  `revoked_at`, `revoke_reason` (CHECK `ROTATED | LOGOUT | REUSE_DETECTED`, extended by later migrations) and
+  `replaced_by_id` (self-FK); CHECKs that `revoked` matches `revoked_at` and a reason is set exactly when revoked. The
+  runtime role may insert `organization_id` and update only `revoked, revoked_at, revoke_reason, replaced_by_id`; never
+  DELETE or TRUNCATE.
+- **Packages:** `security` (filter chain, problem entry point/handler, CORS), `security.jwt` (key set, issuer,
+  decoder, JWT-to-principal converter), `security.principal` (`AuthenticatedPrincipal`, accessor, status query), `auth`
+  (controller, login/refresh services, token store, cookies, CSRF/Origin guard, properties, DTOs), `profile` (`/me`).
+- **Tests:** migration and runtime-role tests for V14, plus the `RuntimePrivilegesTest` inventory (existing
+  `RefreshToken*` tests updated for the new column); negative token tests (bad signature, `alg=none`, HS256
+  confusion, unknown `kid`, wrong `iss`/`aud`, expired, tampered `org`, revoked session, inactive employee or
+  organization), all giving one identical 401; a fail-closed inventory that every non-public endpoint rejects
+  unauthenticated calls; CORS, CSRF and Origin; cross-tenant login and `/me`; no PII in logs or Sentry; the full
+  register → verify → login → `/me` → refresh → logout flow; identical failure bodies with exactly one Argon2 check
+  each; `login_attempt` and audit rows; rotation, reuse, sliding and absolute expiry on a controllable clock; parallel
+  refresh; logout idempotence; independent sessions. Unique values in every test (B2 development rules).
+- **CI:** `smoke.sh` gains two checks: the backend refuses to start without a signing key, and `GET /api/v1/me`
+  without a token returns a 401 problem body. Compose requires the key (`${…:?}`); `.env.example` lists the names
+  blank.
 
 ### B0-4 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
 
