@@ -87,7 +87,7 @@ class EmployeeInvitationMigrationTest {
                                         "INSERT INTO employee_invitation (organization_id,"
                                                 + " email_normalized, intended_role, token_hash,"
                                                 + " inviter_employee_id, expires_at) VALUES (?, ?,"
-                                                + " 'EMPLOYEE', 'hash', ?, ?)",
+                                                + " 'EMPLOYEE', 'hash-' || gen_random_uuid(), ?, ?)",
                                         UUID.randomUUID(),
                                         uniqueInviteeEmail(),
                                         inviter,
@@ -101,7 +101,7 @@ class EmployeeInvitationMigrationTest {
                                         "INSERT INTO employee_invitation (organization_id,"
                                                 + " email_normalized, intended_role, token_hash,"
                                                 + " inviter_employee_id, expires_at) VALUES (?, ?,"
-                                                + " 'EMPLOYEE', 'hash', ?, ?)",
+                                                + " 'EMPLOYEE', 'hash-' || gen_random_uuid(), ?, ?)",
                                         org,
                                         uniqueInviteeEmail(),
                                         UUID.randomUUID(),
@@ -121,7 +121,7 @@ class EmployeeInvitationMigrationTest {
                                         "INSERT INTO employee_invitation (organization_id,"
                                                 + " email_normalized, intended_role, token_hash,"
                                                 + " inviter_employee_id, expires_at) VALUES (?, ?,"
-                                                + " 'SUPER_ADMIN', 'hash', ?, ?)",
+                                                + " 'SUPER_ADMIN', 'hash-' || gen_random_uuid(), ?, ?)",
                                         org,
                                         uniqueInviteeEmail(),
                                         inviter,
@@ -142,7 +142,7 @@ class EmployeeInvitationMigrationTest {
                                         "INSERT INTO employee_invitation (organization_id,"
                                                 + " email_normalized, intended_role, token_hash,"
                                                 + " inviter_employee_id, expires_at) VALUES (?,"
-                                                + " 'Invitee@Example.com', 'EMPLOYEE', 'hash', ?,"
+                                                + " 'Invitee@Example.com', 'EMPLOYEE', 'hash-' || gen_random_uuid(), ?,"
                                                 + " ?)",
                                         org,
                                         inviter,
@@ -161,10 +161,18 @@ class EmployeeInvitationMigrationTest {
                 "INSERT INTO employee_invitation (organization_id, email_normalized,"
                         + " intended_role, token_hash, inviter_employee_id, expires_at)"
                         + " VALUES (?, ?, 'EMPLOYEE', ?, ?, ?)";
-        jdbc.update(insert, org, email, "hash-1", inviter, inOneHour());
+        jdbc.update(insert, org, email, "hash-" + UUID.randomUUID(), inviter, inOneHour());
 
         // A second active invite to the same org+email is rejected.
-        assertThatThrownBy(() -> jdbc.update(insert, org, email, "hash-2", inviter, inOneHour()))
+        assertThatThrownBy(
+                        () ->
+                                jdbc.update(
+                                        insert,
+                                        org,
+                                        email,
+                                        "hash-" + UUID.randomUUID(),
+                                        inviter,
+                                        inOneHour()))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("23505"));
 
@@ -174,12 +182,12 @@ class EmployeeInvitationMigrationTest {
                         + " WHERE organization_id = ? AND email_normalized = ?",
                 org,
                 email);
-        jdbc.update(insert, org, email, "hash-3", inviter, inOneHour());
+        jdbc.update(insert, org, email, "hash-" + UUID.randomUUID(), inviter, inOneHour());
 
         // Different organization, same email: allowed (tenant-scoped).
         UUID org2 = insertOrganization();
         UUID inviter2 = insertInviter(org2);
-        jdbc.update(insert, org2, email, "hash-4", inviter2, inOneHour());
+        jdbc.update(insert, org2, email, "hash-" + UUID.randomUUID(), inviter2, inOneHour());
     }
 
     @Test
@@ -190,7 +198,7 @@ class EmployeeInvitationMigrationTest {
         jdbc.update(
                 "INSERT INTO employee_invitation (organization_id, email_normalized,"
                         + " intended_role, token_hash, inviter_employee_id, expires_at)"
-                        + " VALUES (?, ?, 'EMPLOYEE', 'hash-1', ?, ?)",
+                        + " VALUES (?, ?, 'EMPLOYEE', 'hash-' || gen_random_uuid(), ?, ?)",
                 org,
                 email,
                 inviter,
@@ -204,7 +212,7 @@ class EmployeeInvitationMigrationTest {
         jdbc.update(
                 "INSERT INTO employee_invitation (organization_id, email_normalized,"
                         + " intended_role, token_hash, inviter_employee_id, expires_at)"
-                        + " VALUES (?, ?, 'EMPLOYEE', 'hash-2', ?, ?)",
+                        + " VALUES (?, ?, 'EMPLOYEE', 'hash-' || gen_random_uuid(), ?, ?)",
                 org,
                 email,
                 inviter,
@@ -220,7 +228,7 @@ class EmployeeInvitationMigrationTest {
                 jdbc.queryForObject(
                         "INSERT INTO employee_invitation (organization_id, email_normalized,"
                                 + " intended_role, token_hash, inviter_employee_id, expires_at)"
-                                + " VALUES (?, ?, 'EMPLOYEE', 'hash', ?, ?) RETURNING id",
+                                + " VALUES (?, ?, 'EMPLOYEE', 'hash-' || gen_random_uuid(), ?, ?) RETURNING id",
                         UUID.class,
                         org,
                         uniqueInviteeEmail(),
@@ -236,7 +244,7 @@ class EmployeeInvitationMigrationTest {
     }
 
     @Test
-    void thereIsAnIndexOnTokenHashAndThePartialUniqueOnActiveInvites() {
+    void tokenHashIsUniqueAndThePartialUniqueOnActiveInvitesExists() {
         var indexes =
                 jdbc.queryForList(
                         "SELECT indexname FROM pg_indexes WHERE tablename = 'employee_invitation'",
@@ -246,6 +254,8 @@ class EmployeeInvitationMigrationTest {
                 .containsExactlyInAnyOrder(
                         "pk_employee_invitation",
                         "uq_employee_invitation_active_per_org_email",
-                        "idx_employee_invitation_token_hash");
+                        // V15 (b2-4) replaced V10's plain token_hash index with a unique
+                        // constraint.
+                        "uq_employee_invitation_token_hash");
     }
 }
