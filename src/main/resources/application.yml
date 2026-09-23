@@ -146,6 +146,12 @@ logging:
     org.hibernate.orm.jdbc.error: "OFF"
 
 peoplehub:
+  # Spec 0, 5: "no hardcoded UI strings/org values" -- shown in verification/invite email templates
+  # (EMPLOYEE_INVITED, ORGANIZATION_VERIFICATION) as {{appName}}. A single global default for now;
+  # b2-2 does not build per-organization branding, only the config point (org-level override, if
+  # ever wanted, is a future org-settings phase, not this one). Override with PEOPLEHUB_APP_NAME.
+  app-name: PeopleHub
+
   scheduling:
     # [confirm] How long a job's lock is held if the instance running it dies without releasing it,
     # unless the job's @SchedulerLock says otherwise (ISO-8601). It must exceed the longest run of

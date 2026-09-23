@@ -1,0 +1,9 @@
+Verify your {{appName}} organization
+
+Hi {{firstName}},
+
+Thanks for registering {{organizationLoginKey}} on {{appName}}. To verify your email and activate your organization, use this verification code:
+
+{{verificationCode}}
+
+This code expires in 24 hours. If you did not request this, you can safely ignore this email.

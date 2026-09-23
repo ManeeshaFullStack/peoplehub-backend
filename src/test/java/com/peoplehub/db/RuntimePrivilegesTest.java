@@ -73,6 +73,9 @@ class RuntimePrivilegesTest {
                     Map.entry("refresh_token", Set.of("SELECT")),
                     Map.entry("login_attempt", Set.of("SELECT")),
                     Map.entry("mfa_recovery_code", Set.of("SELECT")),
+                    // b2-2 (V13): SELECT is table-level; INSERT and UPDATE are both column-level on
+                    // strict subsets, same reasoning as every table above.
+                    Map.entry("organization_verification_token", Set.of("SELECT")),
                     Map.entry("flyway_schema_history", Set.of()));
 
     private static final Set<String> AUDIT_INSERT_COLUMNS =
@@ -212,6 +215,17 @@ class RuntimePrivilegesTest {
 
     /** b2-1 (V11) grants UPDATE on exactly this one mfa_recovery_code column. */
     private static final Set<String> MFA_RECOVERY_CODE_UPDATE_COLUMNS = Set.of("used_at");
+
+    /**
+     * b2-2 (V13) grants INSERT on exactly these organization_verification_token columns. Not
+     * id/created_at (database-generated).
+     */
+    private static final Set<String> ORGANIZATION_VERIFICATION_TOKEN_INSERT_COLUMNS =
+            Set.of("organization_id", "token_hash", "expires_at");
+
+    /** b2-2 (V13) grants UPDATE on exactly this one organization_verification_token column. */
+    private static final Set<String> ORGANIZATION_VERIFICATION_TOKEN_UPDATE_COLUMNS =
+            Set.of("consumed_at");
 
     @Autowired private JdbcTemplate jdbc;
 
@@ -821,6 +835,60 @@ class RuntimePrivilegesTest {
                 jdbc.queryForList(
                         "SELECT unnest(relacl)::text FROM pg_class"
                                 + " WHERE oid = 'public.mfa_recovery_code'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void organizationVerificationTokenInsertIsGrantedOnExactlyTheThreeWriterColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'organization_verification_token'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?,"
+                                    + " 'public.organization_verification_token', ?, 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on organization_verification_token." + column)
+                    .isEqualTo(ORGANIZATION_VERIFICATION_TOKEN_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(ORGANIZATION_VERIFICATION_TOKEN_INSERT_COLUMNS)
+                .doesNotContain("id", "created_at");
+    }
+
+    @Test
+    void organizationVerificationTokenUpdateIsGrantedOnlyOnConsumedAt() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'organization_verification_token'",
+                        String.class)) {
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?,"
+                                    + " 'public.organization_verification_token', ?, 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on organization_verification_token." + column)
+                    .isEqualTo(ORGANIZATION_VERIFICATION_TOKEN_UPDATE_COLUMNS.contains(column));
+        }
+    }
+
+    @Test
+    void organizationVerificationTokenGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid ="
+                                + " 'public.organization_verification_token'::regclass",
                         String.class);
 
         assertThat(acl).noneMatch(entry -> entry.startsWith("="));
