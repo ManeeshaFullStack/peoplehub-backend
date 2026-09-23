@@ -30,8 +30,10 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 - **Multi-organization HR operations SaaS backend** (v9, D21): one deployment can host many organizations, and each one
   behaves as a completely private workspace (hard tenant isolation; see "v9 adoption" below). Scope: attendance
   (server-authoritative sessions), leave, approvals, org/departments, calendar, notifications, reports, audit.
-  Standalone (own auth/org/data). **Not built yet:** the merged B0 code has no tenant model; organization
-  registration, tenancy and login arrive in B2, so B0 must not pretend to implement them.
+  Standalone (own auth/org/data). **Built so far in B2 (b2-1 to b2-3):** the organization/tenant/employee schema,
+  organization registration with founder email verification, and password login with JWT, rotating refresh tokens and
+  the tenant context. **Not built yet:** invitations, lockout/reset, sessions/deactivation, MFA and database-level
+  tenant isolation (RLS) arrive in b2-4 to b2-8.
 - **Stack:** Java 21, Spring Boot (modular monolith, **package-by-feature**), PostgreSQL (`timestamptz` everywhere,
   `btree_gist`), Flyway (forward-only), Redis (refresh-token families, rate limiting, presence, Spring Cache),
   Jakarta Validation, Logback JSON + MDC, `@Scheduled` + ShedLock, provider-agnostic `EmailService` + transactional
@@ -58,6 +60,10 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 - **B1 status:** b1-1, b1-2, b1-3 and b1-4 are merged (Email & notification platform: outbox
   foundation, templates/retry/sending, in-app notifications + SSE, bounce/complaint suppression;
   PRs #11, #12, #13, #15). **B1 (Email & notification platform) complete.** See §13 for the
+  branch-by-branch detail.
+- **B2 status:** b2-1, b2-2 and b2-3 are merged (organization/tenant/employee schema V8-V12, PR #17; organization
+  registration and founder verification V13, PR #20; password login, JWT and refresh-token rotation V14, PR #23).
+  **Next: `b2-4-invite-activation-admin-invite`.** B2 is not complete (b2-4 to b2-8 remain). See §13 for the
   branch-by-branch detail.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
@@ -204,13 +210,13 @@ The owner finalized a set of multi-tenant HR-policy requirements ahead of the ph
 
 ### B2-2 decisions (owner-approved 2026-09-23; recorded here so they survive a session or repo reset)
 
-Cite as "B2-2/4" and so on (never a bare `D#`, which is the spec's). Scope: `b2-2-org-bootstrap-founder-verification` — organization registration, founder creation, email verification, resend, verification token storage, email through the outbox. Not yet implemented; this locks the design before the branch is created. See "B2 next-phase scope review" (this session) for the full scope/exclusion analysis this refines.
+Cite as "B2-2/4" and so on (never a bare `D#`, which is the spec's). Scope: `b2-2-org-bootstrap-founder-verification` — organization registration, founder creation, email verification, resend, verification token storage, email through the outbox. **Implemented and merged (PR #20).** See "B2 next-phase scope review" (this session) for the full scope/exclusion analysis this refines.
 
 - **B2-2/1 — Password hashing: Argon2id.** A new multi-tenant HR SaaS should use a modern, memory-hard hashing algorithm (spec §8.2/§15 already accept either Argon2id or bcrypt; Argon2id is the pick). Store only the hash, never plaintext. Founder registration hashes the password before storing it (into `employee.password_hash`, already a column from `b2-1`'s `V9`). **Explicitly not in scope for `b2-2`: full Spring Security authentication** — no `SecurityFilterChain`, no JWT, no `AuthenticationManager`, no login endpoints. Those are `b2-3-login-jwt-refresh-tenant-context`'s job. Allowed here: a minimal password-hashing dependency only (e.g. `spring-security-crypto`'s `Argon2PasswordEncoder` used standalone, or an equivalent library) — not the full `spring-boot-starter-security` starter. This is a direct application of the B2 development rules already recorded in memory: never add the security starter and feature code in the same change; dependency first, verified, then code.
 - **B2-2/2 — Breached-password validation: design only, no external dependency yet.** `b2-2` does not block registration on an external breached-password API (spec §8.2 leaves the choice open between a k-anonymity API and an offline list). Introduces a **`PasswordSecurityValidator`** abstraction (interface) now, so the check point exists and is swappable, without adding any external runtime dependency in this phase. Future implementations (HaveIBeenPwned k-anonymity API, or an offline compromised-password list) plug in later without changing the registration flow around it.
 - **B2-2/3 — Rate limiting: recorded requirement, not built.** `b2-2` does not implement Bucket4j+Redis rate limiting. `POST /public/organizations/register`, `/verify-email` and `/resend-verification` are recorded as abuse-sensitive, enumeration-adjacent endpoints needing rate limiting later — spec §15 item 10 doesn't name registration explicitly (only "login, reset, approvals, check-in/out, exports, agent endpoints"), so this extends that list rather than contradicting it. Full implementation is deferred to a later security-hardening phase, the same "recorded now, built later" treatment already given to other owed items in this file (e.g. the "Owed from B4 onward" bullet in §2).
 - **B2-2/4 — Founder lifecycle, locked.** Registration creates `organization.status = PENDING_VERIFICATION` (already `V8`'s default) and `employee.status = PENDING_VERIFICATION`, `role = SUPER_ADMIN`. **This resolves `V9`'s own flagged migration comment** (the §12-vs-§2.1.3 inconsistency over whether `employee.status` includes `PENDING_VERIFICATION`, previously recorded only as "a safe superset pending owner confirmation"): it is now confirmed as a real, used value, not a defensive superset. After successful email verification: `organization.status = ACTIVE`, `employee.status = ACTIVE`. No user session exists before verification (reaffirms D23/§2.1.3; still true, `b2-2` doesn't change it).
-- **B2-2/5 — Verification token design (`V13`, planned, not created yet).** New table `organization_verification_token`: `token_hash` only (**never** the raw token — the same discipline already applied to `employee_invitation.token_hash`, `refresh_token.token_hash` and `mfa_recovery_code.code_hash`, b2-1; this becomes the fourth table following that exact pattern), single-use (`consumed_at`), `expires_at`, and a required, real `organization_id` FK (organization already exists by the time this table is created — no "no FK yet" forward-compat needed, same reasoning already applied to every `b2-1` table). Flow: generate a random raw token → email the raw token → store only its hash → the user clicks the link → the submitted token is hashed → compared against the stored hash → consumed on match.
+- **B2-2/5 — Verification token design (`V13`, created in b2-2).** New table `organization_verification_token`: `token_hash` only (**never** the raw token — the same discipline already applied to `employee_invitation.token_hash`, `refresh_token.token_hash` and `mfa_recovery_code.code_hash`, b2-1; this becomes the fourth table following that exact pattern), single-use (`consumed_at`), `expires_at`, and a required, real `organization_id` FK (organization already exists by the time this table is created — no "no FK yet" forward-compat needed, same reasoning already applied to every `b2-1` table). Flow: generate a random raw token → email the raw token → store only its hash → the user clicks the link → the submitted token is hashed → compared against the stored hash → consumed on match.
 - **B2-2/6 — Email integration.** Uses the existing `EmailOutboxWriter` (b1-1) — never sends directly. Adds one new email `type`: **`ORGANIZATION_VERIFICATION`**, with its own classpath template (the `EmailTemplateRenderer` mechanism already built in `b1-2`).
 - **B2-2/7 — Audit integration.** `b2-2` is `AuditWriter`'s (b0-6) **first real caller** — nothing has invoked it in production code since it was built, by design (B0-6/1: "no production code calls `AuditWriter` yet," acceptable until a real organization id exists). Records organization registration and founder verification through `AuditWriter.append`, inside the same transaction as the business change it describes (the existing `Propagation.MANDATORY` contract), now that `b2-1` gives it a real, non-fabricated organization id to write.
 - **B2-2/8 — Scope boundaries.** **Included:** organization registration, founder employee creation, email verification, verification resend, verification token storage, email sending through the outbox. **Excluded:** login, JWT, refresh tokens, MFA, invitations, onboarding-wizard completion, tenant context, and the full authorization system — all later B2 branches (`b2-3` through `b2-8`), not pulled forward.
@@ -259,8 +265,8 @@ recorded as §15 item 15.
 
 Cite as "B2-3/4" and so on (never a bare `D#`, which is the spec's). Scope:
 `feature/b2-3-login-jwt-refresh-tenant-context` — password login, JWT access tokens, rotating refresh tokens, logout,
-tenant context, a minimal `/me`, and audit events for those actions. Not yet implemented; this locks the design before
-the branch is created. Spec basis: §2.1.1, §2.1.6, §8.1, §8.2, §13.0, §15, §15.1.
+tenant context, a minimal `/me`, and audit events for those actions. **Implemented and merged (PR #23).** Spec basis:
+§2.1.1, §2.1.6, §8.1, §8.2, §13.0, §15, §15.1.
 
 **JWT**
 
@@ -913,6 +919,16 @@ policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-sch
   wired to a real caller (no Admin/employee identity exists until B2/B3); PR #15). **B1 (Email &
   notification platform) complete: b1-1, b1-2, b1-3 and b1-4 merged and verified.** Update this line
   when a phase merges.
+- **B2 progress:** **b2-1 is merged** (`feature/b2-1-org-tenant-employee-schema`: V8 `organization`, V9 `employee`,
+  V10 `employee_invitation`, V11 `refresh_token`/`login_attempt`/`mfa_recovery_code`, V12 tenant FK retrofit; PR #17).
+  **b2-2 is merged** (`feature/b2-2-org-bootstrap-founder-verification`: V13 `organization_verification_token`,
+  registration, founder email verification and resend through the outbox, Argon2id password hashing; PR #20; decisions
+  B2-2/1-B2-2/8). **b2-3 is merged** (`feature/b2-3-login-jwt-refresh-tenant-context`: Spring Security deny-by-default
+  chain, ES256 JWT access tokens, V14 refresh-token rotation with reuse detection, logout, per-request tenant context,
+  `GET /me`, authentication audit events; PR #23; decisions B2-3/1-B2-3/21). **Next: b2-4** (invitations and
+  activation, direct Admin invite). Still owed inside B2: b2-5 lockout/reset, b2-6 sessions/deactivation, b2-7 MFA
+  (policy per MFA/1-MFA/7; the spec's mandatory-MFA text must be corrected first, §15 item 15), b2-8 RLS and the
+  cross-tenant security suite (B2-3/20). Update this line when a phase merges.
 
 ## 14. Local environment notes
 
