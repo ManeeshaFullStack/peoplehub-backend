@@ -1,6 +1,7 @@
 package com.peoplehub.common.observability;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -177,7 +178,11 @@ class SentryPipelineTest {
     void handledClientErrorsAreNotReported() throws Exception {
         mvc.perform(get(BASE + "/problem")).andExpect(status().isNotFound());
         mvc.perform(get(BASE + "/typed/not-a-number")).andExpect(status().isBadRequest());
-        mvc.perform(get("/api/v1/nothing/here")).andExpect(status().isNotFound());
+        // An unmapped path is a 401 without authentication (b2-3) and a 404 with it; both are
+        // handled client errors.
+        mvc.perform(get("/api/v1/nothing/here")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/nothing/here").with(user("probe")))
+                .andExpect(status().isNotFound());
         mvc.perform(post(BASE + "/items").contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isBadRequest());
         mvc.perform(get(BASE + "/limit").queryParam("limit", "99"))

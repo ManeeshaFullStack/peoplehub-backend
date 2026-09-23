@@ -12,8 +12,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
  * Puts an actor id in MDC for every request, right after the correlation id (Spec 14.1). It seeds
- * {@value ActorId#ANONYMOUS}; the authentication step (B2) overwrites it with the employee id from
- * the token. This filter owns the clean-up, so the value never outlives the request.
+ * {@value ActorId#ANONYMOUS}; the authentication step (b2-3) overwrites it with the employee id
+ * from the token and adds the {@link OrganizationId}. This filter owns the clean-up of both, so
+ * neither value outlives the request.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 1)
@@ -28,6 +29,7 @@ public class ActorIdFilter extends OncePerRequestFilter {
             chain.doFilter(request, response);
         } finally {
             ActorId.clear();
+            OrganizationId.clear();
         }
     }
 }

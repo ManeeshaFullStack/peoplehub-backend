@@ -117,9 +117,7 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- Password hashing only (Spec 8.2, 15; b2-2, B2-2/1): Argon2PasswordEncoder used standalone.
-             Deliberately NOT spring-boot-starter-security: no SecurityFilterChain, no
-             AuthenticationManager, no login endpoints until b2-3. bcprov-jdk18on is
+        <!-- Password hashing (Spec 8.2, 15; b2-2, B2-2/1): Argon2PasswordEncoder. bcprov-jdk18on is
              Argon2PasswordEncoder's own runtime delegate for the Argon2 algorithm; neither the Boot
              BOM nor spring-security-crypto's own POM manages a version for it (verified empirically:
              omitting it fails at runtime with NoClassDefFoundError), so it is pinned here like
@@ -134,9 +132,26 @@
             <version>${bouncycastle.version}</version>
         </dependency>
 
+        <!-- Authentication (b2-3, B2-3 decisions): the SecurityFilterChain, plus the OAuth2 resource
+             server for bearer-token (JWT) authentication and Nimbus JOSE for ES256 signing and
+             verification. Versions are managed by the Boot BOM. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-oauth2-resource-server</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-test</artifactId>
             <scope>test</scope>
         </dependency>
         <!-- Testcontainers (real Postgres/Redis in tests; Spec 14.4) -->

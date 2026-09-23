@@ -437,16 +437,19 @@ class EmployeeMigrationTest {
     }
 
     @Test
-    void thereIsNoSecondaryIndexBeyondThePrimaryKeyAndTheTwoTenantScopedUniques() {
+    void thereIsNoSecondaryIndexBeyondThePrimaryKeyAndTheTenantScopedUniques() {
         var indexes =
                 jdbc.queryForList(
                         "SELECT indexname FROM pg_indexes WHERE tablename = 'employee'",
                         String.class);
 
+        // uq_employee_organization_id is V14's (b2-3): the target of refresh_token's composite
+        // tenant-safe foreign key.
         assertThat(indexes)
                 .containsExactlyInAnyOrder(
                         "pk_employee",
                         "uq_employee_organization_email",
-                        "uq_employee_organization_code");
+                        "uq_employee_organization_code",
+                        "uq_employee_organization_id");
     }
 }

@@ -4,6 +4,7 @@ import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.startsWith;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -134,6 +135,8 @@ class OpenApiDocumentTest {
 
     @Test
     void theDocumentItselfIsNotUnderTheApiPrefix() throws Exception {
-        mvc.perform(get("/api/v1/v3/api-docs")).andExpect(status().isNotFound());
+        // Authenticated, so the 404 comes from routing, not from the deny-by-default chain (b2-3).
+        mvc.perform(get("/api/v1/v3/api-docs").with(user("probe")))
+                .andExpect(status().isNotFound());
     }
 }

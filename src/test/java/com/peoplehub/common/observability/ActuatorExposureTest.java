@@ -1,6 +1,7 @@
 package com.peoplehub.common.observability;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -21,8 +22,9 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
- * What Actuator publishes (Spec 14.2, 16.4): health and the two probes, and nothing else. Actuator
- * is an unauthenticated surface until B2, so anything beyond health must be unreachable.
+ * What Actuator publishes (Spec 14.2, 16.4): health and the two probes, and nothing else. Health is
+ * public; since b2-3 every other path needs authentication (401), and even an authenticated caller
+ * finds nothing else exposed (404), so exposure does not depend on the security chain alone.
  */
 @IntegrationTest
 @AutoConfigureMockMvc
@@ -111,7 +113,9 @@ class ActuatorExposureTest {
                 "sentry"
             })
     void everyEndpointBesidesHealthIsUnreachable(String endpoint) throws Exception {
-        mvc.perform(get("/actuator/" + endpoint)).andExpect(status().isNotFound());
+        mvc.perform(get("/actuator/" + endpoint)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/actuator/" + endpoint).with(user("probe")))
+                .andExpect(status().isNotFound());
     }
 
     @Test
@@ -124,6 +128,10 @@ class ActuatorExposureTest {
     @Test
     void anUnexposedEndpointStillAnswersWithTheStandardProblemBody() throws Exception {
         mvc.perform(get("/actuator/env"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.type").value("urn:peoplehub:problem:unauthorized"))
+                .andExpect(jsonPath("$.correlationId").isNotEmpty());
+        mvc.perform(get("/actuator/env").with(user("probe")))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.type").value("urn:peoplehub:problem:not-found"))
                 .andExpect(jsonPath("$.correlationId").isNotEmpty());

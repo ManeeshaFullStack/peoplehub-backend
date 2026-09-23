@@ -18,7 +18,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * V11 (refresh_token): applies cleanly, the table has the approved shape, and its constraints
  * reject bad data (b2-1, Spec 8.1, 12). Mirrors {@code EmployeeInvitationMigrationTest}'s coverage
  * of the equivalent V10 migration. Runs as the container's superuser; {@code
- * RefreshTokenRuntimeRoleTest} covers what the runtime role may do.
+ * RefreshTokenRuntimeRoleTest} covers what the runtime role may do. Inserts supply {@code
+ * organization_id}, required since V14 ({@code RefreshTokenRotationMigrationTest}).
  *
  * <p>No {@code @BeforeEach} cleanup: {@code organization} is referenced by the append-only {@code
  * audit_log} (b2-1, V12), so a table-wide {@code DELETE} can fail on an unrelated test class's row.
@@ -74,12 +75,14 @@ class RefreshTokenMigrationTest {
 
     @Test
     void employeeIdMustReferenceARealEmployee() {
+        UUID org = insertOrganization();
         assertThatThrownBy(
                         () ->
                                 jdbc.update(
-                                        "INSERT INTO refresh_token (employee_id, token_hash,"
-                                                + " family_id, expires_at, absolute_expires_at)"
-                                                + " VALUES (?, ?, ?, ?, ?)",
+                                        "INSERT INTO refresh_token (organization_id, employee_id,"
+                                                + " token_hash, family_id, expires_at,"
+                                                + " absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                        org,
                                         UUID.randomUUID(),
                                         "hash-" + UUID.randomUUID(),
                                         UUID.randomUUID(),
@@ -95,8 +98,9 @@ class RefreshTokenMigrationTest {
         UUID employee = insertEmployee(org);
         String hash = "hash-" + UUID.randomUUID();
         jdbc.update(
-                "INSERT INTO refresh_token (employee_id, token_hash, family_id, expires_at,"
-                        + " absolute_expires_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO refresh_token (organization_id, employee_id, token_hash, family_id,"
+                        + " expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                org,
                 employee,
                 hash,
                 UUID.randomUUID(),
@@ -106,9 +110,10 @@ class RefreshTokenMigrationTest {
         assertThatThrownBy(
                         () ->
                                 jdbc.update(
-                                        "INSERT INTO refresh_token (employee_id, token_hash,"
-                                                + " family_id, expires_at, absolute_expires_at)"
-                                                + " VALUES (?, ?, ?, ?, ?)",
+                                        "INSERT INTO refresh_token (organization_id, employee_id,"
+                                                + " token_hash, family_id, expires_at,"
+                                                + " absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                        org,
                                         employee,
                                         hash,
                                         UUID.randomUUID(),
@@ -126,9 +131,10 @@ class RefreshTokenMigrationTest {
         assertThatThrownBy(
                         () ->
                                 jdbc.update(
-                                        "INSERT INTO refresh_token (employee_id, token_hash,"
-                                                + " family_id, expires_at, absolute_expires_at)"
-                                                + " VALUES (?, '', ?, ?, ?)",
+                                        "INSERT INTO refresh_token (organization_id, employee_id,"
+                                                + " token_hash, family_id, expires_at,"
+                                                + " absolute_expires_at) VALUES (?, ?, '', ?, ?, ?)",
+                                        org,
                                         employee,
                                         UUID.randomUUID(),
                                         in(30, ChronoUnit.DAYS),
@@ -144,10 +150,11 @@ class RefreshTokenMigrationTest {
         UUID employee = insertEmployee(org);
         UUID id =
                 jdbc.queryForObject(
-                        "INSERT INTO refresh_token (employee_id, token_hash, family_id,"
-                                + " expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?)"
-                                + " RETURNING id",
+                        "INSERT INTO refresh_token (organization_id, employee_id, token_hash,"
+                                + " family_id, expires_at, absolute_expires_at)"
+                                + " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
                         UUID.class,
+                        org,
                         employee,
                         "hash-" + UUID.randomUUID(),
                         UUID.randomUUID(),

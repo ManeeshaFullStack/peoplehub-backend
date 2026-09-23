@@ -32,8 +32,9 @@ import org.springframework.core.MethodParameter;
  * responses on every operation, and documentation of the {@code page}/{@code size}/{@code sort}
  * parameters of endpoints that take a {@link PageQuery}.
  *
- * <p>Error responses are documented as 400 (only for operations that take input) and 500. 401/403
- * are added when authentication exists (B2), not before.
+ * <p>Error responses are documented as 400 (only for operations that take input) and 500. The
+ * bearer scheme and the 401/403 responses are added by {@code security.SecurityOpenApiCustomizer}
+ * (b2-3), from the same list of public endpoints the security chain uses.
  */
 @Configuration(proxyBeanMethods = false)
 public class OpenApiConfig {

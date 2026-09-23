@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.common.api.correlation.CorrelationId;
 import com.peoplehub.common.logging.ActorId;
+import com.peoplehub.common.logging.OrganizationId;
 import io.sentry.Breadcrumb;
 import io.sentry.Hint;
 import io.sentry.SentryEvent;
@@ -66,6 +67,7 @@ class SentryEventScrubberTest {
         event.setTransaction("/api/v1/approvals/tok-123");
         event.setTag(CorrelationId.MDC_KEY, "corr-1");
         event.setTag(ActorId.MDC_KEY, "42");
+        event.setTag(OrganizationId.MDC_KEY, "masked-value");
         event.setTag("email", SECRET);
         event.setTag("http.url", "https://api.example/approve/tok-123");
         event.getContexts().put("runtime", "java");
@@ -114,9 +116,10 @@ class SentryEventScrubberTest {
         SentryEvent scrubbed = scrubber.execute(eventFullOfPersonalData(), new Hint());
 
         assertThat(scrubbed.getTags())
-                .containsOnlyKeys(CorrelationId.MDC_KEY, ActorId.MDC_KEY)
+                .containsOnlyKeys(CorrelationId.MDC_KEY, ActorId.MDC_KEY, OrganizationId.MDC_KEY)
                 .containsEntry(CorrelationId.MDC_KEY, "corr-1")
-                .containsEntry(ActorId.MDC_KEY, "42");
+                .containsEntry(ActorId.MDC_KEY, "42")
+                .containsEntry(OrganizationId.MDC_KEY, "masked-value");
     }
 
     @Test

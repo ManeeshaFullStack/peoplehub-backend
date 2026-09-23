@@ -134,6 +134,14 @@ services:
       # Not a Docker secret (it is not sensitive), but required for EmailOutboxProcessor to actually send: sending fails
       # safely (CONFIGURATION_ERROR) while this is blank, it does not stop the container from starting.
       PEOPLEHUB_EMAIL_FROM_ADDRESS: ${PEOPLEHUB_EMAIL_FROM_ADDRESS:-}
+      # Access-token signing key (b2-3, B2-3/2): REQUIRED, no default; the application refuses to start without a valid
+      # one. A PKCS#8 PEM EC P-256 private key, which may be one line (header, footer and line breaks are optional).
+      # Generate one with the command in .env.example.
+      PEOPLEHUB_JWT_SIGNING_KEY: ${PEOPLEHUB_JWT_SIGNING_KEY:?Set PEOPLEHUB_JWT_SIGNING_KEY in .env (see .env.example)}
+      PEOPLEHUB_JWT_SIGNING_KEY_ID: ${PEOPLEHUB_JWT_SIGNING_KEY_ID:?Set PEOPLEHUB_JWT_SIGNING_KEY_ID in .env (see .env.example)}
+      # Optional; blank means none (both are treated as unset by the application when empty).
+      PEOPLEHUB_JWT_PREVIOUS_PUBLIC_KEYS: ${PEOPLEHUB_JWT_PREVIOUS_PUBLIC_KEYS:-}
+      PEOPLEHUB_SECURITY_APP_ORIGIN: ${PEOPLEHUB_SECURITY_APP_ORIGIN:-}
       # Only variables that have a value here are forwarded: an empty forwarded value would override the application's
       # own default with a blank. Each shutdown phase gets this long (B0-4 D8); see stop_grace_period below.
       SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: ${SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE:-30s}
