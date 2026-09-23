@@ -377,6 +377,63 @@ tenant context, a minimal `/me`, and audit events for those actions. **Implement
   without a token returns a 401 problem body. Compose requires the key (`${…:?}`); `.env.example` lists the names
   blank.
 
+### B2-4 decisions (owner-approved 2026-09-23; recorded here so they survive a session or repo reset)
+
+Cite as "B2-4/O4" and so on (never a bare `D#`, which is the spec's). Scope:
+`feature/b2-4-invite-activation-admin-invite` — Employee invitations (Admin or Super Admin), direct Admin invitations
+(Super Admin), resend and revoke, public preview and acceptance (the invitee sets their own password), the invitation
+email through the outbox, audit rows, and the one-time welcome state. Not yet implemented; this locks the design before
+coding. Spec basis: D24, D25, §2.1.5, §3.3, §8.2, §9.1, §10.2, §10.3, §12.1, §13.0, §15.1.
+
+- **B2-4/O1 — The employee row is created at invite time** with `status = INVITED`, the invitation's role and no
+  password (D25). Accepting the invitation activates that row; no second identity is ever created.
+- **B2-4/O2 — Employee code is optional in the invite request.** When absent, the code is generated with
+  `EmployeeCodes` (as registration does); a duplicate code inside the organization is a 409.
+- **B2-4/O3 — Invitation lifetime: 7 days**, an internal setting (environment-overridable), not
+  organization-configurable, the same treatment as B2-3/5. Expiry is checked against the injected `Clock`.
+- **B2-4/O4 — Preview** returns, for a valid token only: the organization's display name, the intended role, the
+  invitee's own name and email, and the expiry. An unknown, expired, used or revoked token all get **one identical
+  generic 404** ("This invitation is invalid or has expired."). Preview never changes anything, so a mail scanner that
+  follows the link cannot consume it (the D8 principle).
+- **B2-4/O5 — Acceptance activates only (204).** It opens no session: the invitee then signs in through the normal
+  login (B2-3), so there is one login path.
+- **B2-4/O6 — `V15` hardening:** `UNIQUE (token_hash)` on `employee_invitation`; a CHECK that an invitation is never
+  both consumed and revoked; a composite foreign key `(organization_id, inviter_employee_id)` →
+  `employee (organization_id, id)` so an inviter can never belong to another organization.
+- **B2-4/O7 — Inviting an email that already exists in the organization:** an `ACTIVE`, `DEACTIVATED` or other
+  non-invited employee is a **409** (an in-tenant signal to the Admin, not cross-tenant enumeration). An `INVITED`
+  employee with no open invitation gets **a new invitation on the existing row** (same role only; a different role is a
+  409). An open invitation already existing is a 409 (use resend).
+- **B2-4/O8 — Resend and revoke permissions:** an Admin may resend or revoke **Employee** invitations only; a Super Admin
+  may resend or revoke any. An invitation id from another organization is a **404**, never a 403 (D22). An expired but
+  unconsumed, unrevoked invitation can be resent; a consumed or revoked one cannot (409).
+- **B2-4/O9 — Promoting an existing Employee to Admin is deferred to `b2-7`**: it requires step-up authentication (§3.3,
+  §8.3), which `b2-7` builds.
+- **B2-4/O10 — Invitation email:** type `EMPLOYEE_INVITED` (the B1 template, whose text is updated). The payload holds
+  only plain token values (B0-6/11): `appName`, `firstName` (generic greeting when the name is not a plain token, as
+  registration does), `organizationLoginKey` (the invitee needs it to sign in), `role` and `inviteCode` (the raw
+  token). No link is sent yet. **Future frontend URL support:** the payload already carries everything a frontend
+  invitation link (`/invite/{inviteCode}`, spec §10.4.7) needs, so a link can be added later from a frontend URL setting
+  without changing the invitation flow or its data; implementation is **not blocked** on that setting, and none is
+  added now.
+- **B2-4/O11 — Resend and revoke paths:** `POST /admin/invitations/{id}/resend` and `POST /admin/invitations/{id}/revoke`
+  (spec §13.0 only says they are tenant-local and permission-checked).
+- **B2-4/O12 — The welcome state is included:** `GET /me` gains `firstName` (D17: the first word of `name`, or the
+  whole name when it has none) and `welcomeSeenAt`; `POST /me/welcome/ack` sets `welcome_seen_at` once (idempotent,
+  204), per §10.2 and the §22.1 launch gate "invitation → private password → welcome".
+- **B2-4/O13 — No invitation list endpoint** in `b2-4`; listing belongs with the directory and employee CRUD (`b3-3`).
+  Resend and revoke work on the id the invite response returns.
+- **B2-4/O14 — In-app notifications ("employee invited/activated", §9.1) are deferred:** there is no Admin
+  notification surface yet. Audit rows record every invitation action now.
+- **B2-4/O15 — Rate limiting on the public preview and accept endpoints: recorded, not built** (as B2-2/3).
+
+**Authorization in `b2-4`** is a minimal service-layer role check on the principal's database role (Admin or Super Admin
+for Employee invitations, Super Admin for Admin invitations), not the `b3-1` permission matrix. **Deferred to their
+planned branches, not built in `b2-4`:** MFA and any MFA gate for invited Admins (`b2-7`, MFA/1–MFA/7; the spec's
+"Admin invitees complete MFA" text is §15 item 15), promotion (`b2-7`), password reset and lockout (`b2-5`), deactivation
+and revoking pending invitations on deactivation (`b2-6`), RLS (`b2-8`), the permission matrix (`b3-1`), departments
+(`b3-2`), bulk import (`b3-5`), notifications and rate limiting.
+
 ### B0-4 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
 
 - **D1 — Health endpoints.** Split into `/actuator/health/liveness` and `/actuator/health/readiness`. The Dockerfile
