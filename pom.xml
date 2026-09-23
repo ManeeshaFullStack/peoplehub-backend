@@ -22,6 +22,7 @@
         <springdoc.version>3.1.1</springdoc.version>
         <sentry.version>8.57.0</sentry.version>
         <shedlock.version>7.10.1</shedlock.version>
+        <bouncycastle.version>1.84</bouncycastle.version>
         <spotless.version>3.10.2</spotless.version>
         <google-java-format.version>1.36.1</google-java-format.version>
     </properties>
@@ -114,6 +115,23 @@
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <optional>true</optional>
+        </dependency>
+
+        <!-- Password hashing only (Spec 8.2, 15; b2-2, B2-2/1): Argon2PasswordEncoder used standalone.
+             Deliberately NOT spring-boot-starter-security: no SecurityFilterChain, no
+             AuthenticationManager, no login endpoints until b2-3. bcprov-jdk18on is
+             Argon2PasswordEncoder's own runtime delegate for the Argon2 algorithm; neither the Boot
+             BOM nor spring-security-crypto's own POM manages a version for it (verified empirically:
+             omitting it fails at runtime with NoClassDefFoundError), so it is pinned here like
+             springdoc/sentry/shedlock above; Dependabot tracks it. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>${bouncycastle.version}</version>
         </dependency>
 
         <dependency>

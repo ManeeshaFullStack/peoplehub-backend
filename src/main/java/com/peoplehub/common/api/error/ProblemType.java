@@ -26,6 +26,11 @@ public enum ProblemType {
     // 401/403 handling for authenticated endpoints is still owed from B2 (CLAUDE.md, "Owed from B4
     // onward"); this entry covers only the webhook's own shared-secret signature check.
     UNAUTHORIZED("unauthorized", "Authentication failed", HttpStatus.UNAUTHORIZED),
+    // b2-2: organization registration's own "this identifier is already claimed" signals (the
+    // organization name/login key is taken). Not a login/forgot-password/resend oracle -- those
+    // stay generic and non-enumerating (D22); this is the requester's own chosen identifier
+    // colliding with an existing one, the same kind of signal registration conventionally gives.
+    CONFLICT("conflict", "Conflict", HttpStatus.CONFLICT),
     INTERNAL_ERROR("internal-error", "Unexpected error", HttpStatus.INTERNAL_SERVER_ERROR);
 
     private static final String URN_PREFIX = "urn:peoplehub:problem:";
