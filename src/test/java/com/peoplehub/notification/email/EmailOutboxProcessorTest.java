@@ -81,7 +81,7 @@ class EmailOutboxProcessorTest {
                         + " VALUES (?, 'jane@example.com', 'EMPLOYEE_INVITED', ?::jsonb, ?, ?, ?)",
                 org,
                 """
-                {"v":1,"attributes":{"appName":"PeopleHub","firstName":"Jane","inviteCode":"AB12CD"}}
+                {"v":1,"attributes":{"appName":"PeopleHub","firstName":"Jane","inviteCode":"AB12CD","organizationLoginKey":"acme-corp","role":"EMPLOYEE"}}
                 """,
                 status,
                 attempts,
@@ -380,7 +380,7 @@ class EmailOutboxProcessorTest {
                         + " VALUES (?, 'jane@example.com', 'EMPLOYEE_INVITED', ?::jsonb, ?, ?)",
                 org,
                 """
-                {"v":1,"attributes":{"appName":"PeopleHub","firstName":"Jane","inviteCode":"AB12CD"}}
+                {"v":1,"attributes":{"appName":"PeopleHub","firstName":"Jane","inviteCode":"AB12CD","organizationLoginKey":"acme-corp","role":"EMPLOYEE"}}
                 """,
                 status,
                 Timestamp.from(Instant.parse(lastAttemptAt)));

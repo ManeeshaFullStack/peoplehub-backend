@@ -27,15 +27,28 @@ class EmailTemplateRendererTest {
     @Test
     void substitutesEveryTokenFromThePayload() {
         String payload =
-                payloadJson("appName", "PeopleHub", "firstName", "Jane", "inviteCode", "AB12CD");
+                payloadJson(
+                        "appName",
+                        "PeopleHub",
+                        "firstName",
+                        "Jane",
+                        "inviteCode",
+                        "AB12CD",
+                        "organizationLoginKey",
+                        "acme-corp",
+                        "role",
+                        "EMPLOYEE");
 
         EmailTemplateRenderer.Rendered rendered = renderer.render("EMPLOYEE_INVITED", payload);
 
-        assertThat(rendered.subject()).isEqualTo("Welcome to PeopleHub, Jane!");
+        // b2-4 (B2-4/O10): the invitation email names the role and the organization login key.
+        assertThat(rendered.subject()).isEqualTo("You're invited to PeopleHub, Jane!");
         assertThat(rendered.body())
                 .contains("Hi Jane,")
-                .contains("You've been invited to join PeopleHub.")
-                .contains("Your invite code is AB12CD.");
+                .contains("You've been invited to join PeopleHub with the role EMPLOYEE.")
+                .contains("Your invite code is AB12CD.")
+                .contains("sign in with the organization acme-corp")
+                .doesNotContain("{{");
     }
 
     @Test
@@ -46,8 +59,17 @@ class EmailTemplateRendererTest {
 
     @Test
     void aMissingRequiredTokenFails() {
-        // The template needs appName, firstName and inviteCode; this payload supplies only two.
-        String payload = payloadJson("appName", "PeopleHub", "firstName", "Jane");
+        // The template needs inviteCode (among others); this payload leaves it out.
+        String payload =
+                payloadJson(
+                        "appName",
+                        "PeopleHub",
+                        "firstName",
+                        "Jane",
+                        "organizationLoginKey",
+                        "acme-corp",
+                        "role",
+                        "EMPLOYEE");
 
         assertThatThrownBy(() -> renderer.render("EMPLOYEE_INVITED", payload))
                 .isInstanceOf(TemplateRenderException.class)

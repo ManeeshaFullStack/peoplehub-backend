@@ -1,5 +1,11 @@
-Welcome to {{appName}}, {{firstName}}!
+You're invited to {{appName}}, {{firstName}}!
 
 Hi {{firstName}},
 
-You've been invited to join {{appName}}. Your invite code is {{inviteCode}}.
+You've been invited to join {{appName}} with the role {{role}}.
+
+To accept, open your invitation and choose your own password. Your invite code is {{inviteCode}}.
+
+Then sign in with the organization {{organizationLoginKey}}, this email address and your new password.
+
+If you were not expecting this invitation, you can ignore this email.
