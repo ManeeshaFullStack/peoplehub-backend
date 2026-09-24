@@ -205,7 +205,8 @@ src/main/java/com/peoplehub/            # package-by-feature; root package com.p
     jwt/                                # ES256 keys, access-token issuing and verification
     principal/                          # AuthenticatedPrincipal: who is calling, and their tenant
   auth/                                 # login, refresh, logout (see "Authentication")
-  profile/                              # GET /me
+  profile/                              # GET /me, welcome acknowledgement
+  invitation/                           # invitations: invite, resend, revoke, preview, accept (see "Invitations")
 src/main/resources/
   application.yml                       # non-secret settings only
   application-local.yml                 # `local` profile: readable console, DEBUG (developer machines only)
@@ -276,7 +277,8 @@ Password login, JWT access tokens and rotating refresh tokens (b2-3; the decisio
 | `POST /api/v1/auth/login` | Body `{organization, email, password}`, the same for every role. Returns `{accessToken, tokenType, expiresIn, csrfToken}` and sets the refresh-token and CSRF cookies. Any failure is one generic 401. |
 | `POST /api/v1/auth/refresh` | Rotates the refresh token and returns a new access token and CSRF token. Needs the cookies and `X-CSRF-Token`. |
 | `POST /api/v1/auth/logout` | Ends the current session (its refresh and access tokens stop working immediately). Always 204. Needs `X-CSRF-Token` when a session cookie is sent. |
-| `GET /api/v1/me` | The caller's own profile. |
+| `GET /api/v1/me` | The caller's own profile, including `firstName` (derived from `name` on the server) and `welcomeSeenAt`. |
+| `POST /api/v1/me/welcome/ack` | Records that the one-time welcome screen was seen (`welcomeSeenAt`); later calls change nothing. 204. |
 
 How a client uses it:
 
@@ -310,6 +312,33 @@ Give it an id (`PEOPLEHUB_JWT_SIGNING_KEY_ID`, for example `2026-09`). To rotate
 the old key's **public** half (`openssl pkey -pubout`) in `PEOPLEHUB_JWT_PREVIOUS_PUBLIC_KEYS` as `oldid:PEM`, deploy,
 and remove it again after 15 minutes (one access-token lifetime). Tests and `spring-boot:test-run` generate a throwaway
 key themselves; `docker/smoke.sh` does too.
+
+## Invitations
+
+Employees and Admins never sign up; they are invited (b2-4; the decisions are "B2-4 decisions" in
+[`CLAUDE.md`](CLAUDE.md)). Not built yet: MFA for invited Admins and promotion of an existing Employee (b2-7),
+deactivation (b2-6), an invitation list (b3-3), bulk import (b3-5), notifications and rate limiting.
+
+| Endpoint | Who | What it does |
+|---|---|---|
+| `POST /api/v1/admin/employees/invite` | Admin, Super Admin | Invites an Employee. Body `{name, email, employeeCode?, joinDate?}`. 201 with `{invitationId, employeeId, role, expiresAt}`. |
+| `POST /api/v1/super-admin/admins/invite` | Super Admin | Invites a new person directly as Admin. Same body and answer. |
+| `POST /api/v1/admin/invitations/{id}/resend` | Admin (Employee invitations), Super Admin | Replaces an open invitation with a new token, email and 7-day lifetime; also works on an expired one. |
+| `POST /api/v1/admin/invitations/{id}/revoke` | Same | The token stops working at once. 204. |
+| `GET /api/v1/public/invitations/{token}/preview` | Public | The organization, the role and the invitee's own name and email. Read-only. |
+| `POST /api/v1/public/invitations/{token}/accept` | Public | Body `{password, confirmPassword}`: the invitee sets their own password and becomes active. 204; they then sign in normally. |
+
+- **Inviting creates the employee** at once as `INVITED` with no password. An employee code is generated when none is
+  given. An email that already belongs to the organization is a 409, except an `INVITED` person with no open invitation,
+  who is simply invited again.
+- **The organization is always the caller's own**, and the role is fixed by the endpoint; nothing in a request can
+  change either, and the invitee cannot change them when accepting. Another organization's invitation id is a 404.
+- **The token** is 256 random bits, emailed once (`EMPLOYEE_INVITED`, as `inviteCode`, with the organization login key
+  and the role) and stored only as a hash. It is valid for 7 days (`peoplehub.invitation.ttl`, `PEOPLEHUB_INVITATION_TTL`)
+  and can be accepted once. Any unusable token (unknown, expired, used, revoked) gets the same generic 404. No link is
+  sent yet: the frontend's `/invite/{inviteCode}` page can be linked later from a frontend URL setting.
+- The accepted password follows the same policy as registration and is stored only as an Argon2id hash. Every
+  invitation action is audited (`INVITATION_CREATED`, `_RESENT`, `_REVOKED`, `_ACCEPTED`), with ids only.
 
 ## Logging & observability
 

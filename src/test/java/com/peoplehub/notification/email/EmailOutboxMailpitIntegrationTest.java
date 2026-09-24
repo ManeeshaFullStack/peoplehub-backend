@@ -104,6 +104,9 @@ class EmailOutboxMailpitIntegrationTest {
                                         .attribute("appName", "PeopleHub")
                                         .attribute("firstName", "Integration")
                                         .attribute("inviteCode", "ZZ99YY")
+                                        // b2-4: the invitation template also needs these.
+                                        .attribute("organizationLoginKey", "acme-corp")
+                                        .attribute("role", "EMPLOYEE")
                                         .build())
                         .build();
 
@@ -124,7 +127,7 @@ class EmailOutboxMailpitIntegrationTest {
         assertThat(messages).hasSize(1);
         JsonNode delivered = messages.get(0);
         assertThat(delivered.path("Subject").asString())
-                .isEqualTo("Welcome to PeopleHub, Integration!");
+                .isEqualTo("You're invited to PeopleHub, Integration!");
         assertThat(delivered.path("To").get(0).path("Address").asString()).isEqualTo(recipient);
     }
 

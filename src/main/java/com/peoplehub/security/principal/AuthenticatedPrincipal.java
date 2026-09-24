@@ -25,4 +25,14 @@ public record AuthenticatedPrincipal(
         Objects.requireNonNull(role, "role");
         Objects.requireNonNull(sessionId, "sessionId");
     }
+
+    /** Whether the caller is a Super Admin (b2-4's minimal role check; the matrix is b3-1). */
+    public boolean isSuperAdmin() {
+        return "SUPER_ADMIN".equals(role);
+    }
+
+    /** Whether the caller is an Admin or a Super Admin. */
+    public boolean isAdmin() {
+        return "ADMIN".equals(role) || isSuperAdmin();
+    }
 }

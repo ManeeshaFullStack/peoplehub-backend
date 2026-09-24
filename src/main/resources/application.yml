@@ -175,6 +175,11 @@ peoplehub:
       sliding-ttl: P30D
       absolute-ttl: P90D
 
+  # Invitations (b2-4, B2-4/O3): how long an invitation can be accepted. An internal setting, not
+  # organization-configurable. Override with PEOPLEHUB_INVITATION_TTL.
+  invitation:
+    ttl: P7D
+
   # The browser origin allowed to call the API with credentials (CORS, and the Origin check on
   # login/refresh/logout; b2-3, B2-3/11). Optional and not declared here: unset means no
   # cross-origin browser access at all. Set PEOPLEHUB_SECURITY_APP_ORIGIN, e.g.
