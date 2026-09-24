@@ -29,6 +29,7 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -184,6 +185,15 @@ public class PasswordResetService {
                                         .attribute("lockoutCleared", lockoutCleared)
                                         .build())
                         .build());
+    }
+
+    /**
+     * Makes every unused reset code of an employee being deactivated permanently unusable (b2-6,
+     * B2-6/11), in the caller's transaction. Returns how many were invalidated.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int invalidateOpenResets(UUID employeeId, UUID organizationId) {
+        return store.invalidateOpen(employeeId, organizationId, clock.instant());
     }
 
     private boolean throttleAllows(PasswordResetStore.Account account) {

@@ -84,6 +84,11 @@ class InvitationStore {
                     + " WHERE id = ? AND organization_id = ?"
                     + " AND consumed_at IS NULL AND revoked_at IS NULL";
 
+    private static final String REVOKE_OPEN_FOR_EMAIL =
+            "UPDATE employee_invitation SET revoked_at = ?"
+                    + " WHERE organization_id = ? AND email_normalized = ?"
+                    + " AND consumed_at IS NULL AND revoked_at IS NULL";
+
     private final JdbcClient jdbc;
 
     InvitationStore(JdbcClient jdbc) {
@@ -249,6 +254,15 @@ class InvitationStore {
                         .param(organizationId)
                         .update()
                 == 1;
+    }
+
+    /** Revokes every open invitation of one email in one organization; returns how many. */
+    int revokeOpenFor(UUID organizationId, String emailNormalized, Instant at) {
+        return jdbc.sql(REVOKE_OPEN_FOR_EMAIL)
+                .param(Timestamp.from(at))
+                .param(organizationId)
+                .param(emailNormalized)
+                .update();
     }
 
     record Organization(String name, String loginKey) {}

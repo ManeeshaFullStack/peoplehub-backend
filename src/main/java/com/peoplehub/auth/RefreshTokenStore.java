@@ -135,17 +135,15 @@ class RefreshTokenStore {
                 .update();
     }
 
-    /**
-     * Why a token was revoked; values of V18's {@code ck_refresh_token_revoke_reason} (its {@code
-     * DEACTIVATED} arrives with deactivation).
-     */
+    /** Why a token was revoked; mirrors V18's {@code ck_refresh_token_revoke_reason}. */
     enum RevokeReason {
         ROTATED,
         LOGOUT,
         REUSE_DETECTED,
         PASSWORD_RESET,
         PASSWORD_CHANGED,
-        SESSION_REVOKED
+        SESSION_REVOKED,
+        DEACTIVATED
     }
 
     record StoredRefreshToken(

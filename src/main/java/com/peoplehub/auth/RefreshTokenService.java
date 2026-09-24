@@ -205,6 +205,18 @@ public class RefreshTokenService {
     }
 
     /**
+     * Ends every session of an employee being deactivated, or, as a safety net, one being
+     * reactivated (b2-6, B2-6/11, B2-6/13; D26): all their refresh tokens are revoked ({@code
+     * DEACTIVATED}), and with them, through the per-request session check (B2-3/14), their access
+     * tokens. Returns how many tokens were revoked. The caller audits the change itself.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int endAllSessionsOnDeactivation(UUID organizationId, UUID employeeId) {
+        return store.revokeEmployee(
+                employeeId, organizationId, RevokeReason.DEACTIVATED, clock.instant());
+    }
+
+    /**
      * Ends every <em>other</em> session of an employee after a password change (b2-5, B2-5/P9; Spec
      * 8.2): their refresh tokens are revoked ({@code PASSWORD_CHANGED}) except those of the session
      * that made the change, which stays signed in. Returns how many tokens were revoked. The caller
