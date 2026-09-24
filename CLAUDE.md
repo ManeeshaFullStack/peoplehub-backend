@@ -30,11 +30,12 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 - **Multi-organization HR operations SaaS backend** (v9, D21): one deployment can host many organizations, and each one
   behaves as a completely private workspace (hard tenant isolation; see "v9 adoption" below). Scope: attendance
   (server-authoritative sessions), leave, approvals, org/departments, calendar, notifications, reports, audit.
-  Standalone (own auth/org/data). **Built so far in B2 (b2-1 to b2-5):** the organization/tenant/employee schema,
+  Standalone (own auth/org/data). **Built so far in B2 (b2-1 to b2-6):** the organization/tenant/employee schema,
   organization registration with founder email verification, password login with JWT, rotating refresh tokens and the
   tenant context, invitation-only membership (Employee and direct Admin invitations, activation, the welcome state),
-  and the password policy with a breached-password check, per-account lockout, forgot/reset and change password.
-  **Not built yet:** sessions/deactivation, MFA and database-level tenant isolation (RLS) arrive in b2-6 to b2-8.
+  the password policy with a breached-password check, per-account lockout, forgot/reset and change password, and the
+  sessions list with session revocation and coarse device labels, and employee deactivation/reactivation.
+  **Not built yet:** MFA and database-level tenant isolation (RLS) arrive in b2-7 and b2-8.
 - **Stack:** Java 21, Spring Boot (modular monolith, **package-by-feature**), PostgreSQL (`timestamptz` everywhere,
   `btree_gist`), Flyway (forward-only), Redis (refresh-token families, rate limiting, presence, Spring Cache),
   Jakarta Validation, Logback JSON + MDC, `@Scheduled` + ShedLock, provider-agnostic `EmailService` + transactional
@@ -62,11 +63,11 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   foundation, templates/retry/sending, in-app notifications + SSE, bounce/complaint suppression;
   PRs #11, #12, #13, #15). **B1 (Email & notification platform) complete.** See §13 for the
   branch-by-branch detail.
-- **B2 status:** b2-1, b2-2, b2-3, b2-4 and b2-5 are merged (organization/tenant/employee schema V8-V12, PR #17;
+- **B2 status:** b2-1, b2-2, b2-3, b2-4, b2-5 and b2-6 are merged (organization/tenant/employee schema V8-V12, PR #17;
   organization registration and founder verification V13, PR #20; password login, JWT and refresh-token rotation V14,
   PR #23; invitations, activation and the welcome state V15, PR #26; password policy, lockout and reset V16-V17,
-  PR #29). **Next: `b2-6-sessions-deactivation-revoke`.** B2 is not complete (b2-6 to b2-8 remain). See §13 for the
-  branch-by-branch detail.
+  PR #29; sessions, session revocation and deactivation V18, PR #32). **Next: `b2-7-mfa-stepup-onboarding`.** B2 is not
+  complete (b2-7 and b2-8 remain). See §13 for the branch-by-branch detail.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15 item 12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
@@ -507,9 +508,8 @@ notifications; the frontend reset page (F1).
 
 Cite as "B2-6/4" and so on (never a bare `D#`, which is the spec's). Scope:
 `feature/b2-6-sessions-deactivation-revoke` — the signed-in employee's sessions list, revoke-one and revoke-others, and
-employee deactivation and reactivation with immediate revocation of access. Not yet implemented; this locks the design
-before coding. Spec basis: D26, §2.1.7, §3.2, §3.3, §8.2, §13.0, §13 (Security and Admin — employees rows), §15.1,
-§22.1.
+employee deactivation and reactivation with immediate revocation of access. **Implemented and merged (PR #32).** Spec
+basis: D26, §2.1.7, §3.2, §3.3, §8.2, §13.0, §13 (Security and Admin — employees rows), §15.1, §22.1.
 
 **Sessions**
 
@@ -1167,9 +1167,18 @@ policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-sch
   (`POST /auth/forgot-password`, `POST /auth/reset-password`: non-enumerating, single-use hashed code, throttled, ends
   every session and clears the lockout, Origin-checked); change password (`POST /me/password`: current password
   required, other sessions ended); audit events `ACCOUNT_LOCKED`, `PASSWORD_RESET_REQUESTED`,
-  `PASSWORD_RESET_COMPLETED` and `PASSWORD_CHANGED`; PR #29; decisions B2-5/P1-B2-5/P13). **Next: b2-6**
-  (sessions, deactivation and revocation). Still owed inside B2: b2-6
-  sessions/deactivation (including revoking pending invitations on deactivation), b2-7 MFA and Employee → Admin
+  `PASSWORD_RESET_COMPLETED` and `PASSWORD_CHANGED`; PR #29; decisions B2-5/P1-B2-5/P13). **b2-6 is merged**
+  (`feature/b2-6-sessions-deactivation-revoke`: V18 adds the `SESSION_REVOKED` and `DEACTIVATED` refresh-token revoke
+  reasons (no new column or grant); `GET /me/sessions` (paginated, the caller's own active sessions, no token, hash or
+  IP), `DELETE /me/sessions/{sessionId}` and `POST /me/sessions/revoke-others`; coarse "browser on OS" device labels
+  (at most 64 characters, never the raw User-Agent or the IP); `POST /admin/employees/{id}/deactivate` (optional
+  `exitDate`) and `/reactivate`, with checks in the order 404, 403, 409, 400, sessions revoked, an invitee's open
+  invitation revoked and unused reset codes invalidated; login and refresh re-check the employee under a row lock so a
+  concurrent deactivation never leaves a usable session; `REFRESH_TOKEN_REUSE_DETECTED` raised only for `ROTATED` and
+  `LOGOUT` tokens; audit events `SESSION_REVOKED`, `OTHER_SESSIONS_REVOKED`, `EMPLOYEE_DEACTIVATED` and
+  `EMPLOYEE_REACTIVATED`; race, tenant-isolation and runtime-role tests and `docker/smoke.sh` checks; a test-only fix
+  keeping the scheduled outbox job out of `EmailOutboxProcessorTest`; PR #32; decisions B2-6/1-B2-6/16). **Next: b2-7**
+  (MFA, step-up and promotion). Still owed inside B2: b2-7 MFA and Employee → Admin
   promotion (policy per MFA/1-MFA/7; the spec's mandatory-MFA text must be corrected first, §15 item 15), b2-8 RLS and
   the cross-tenant security suite (B2-3/20). Update this line when a phase merges.
 
