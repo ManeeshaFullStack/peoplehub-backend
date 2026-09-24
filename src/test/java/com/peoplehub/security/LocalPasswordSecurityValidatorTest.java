@@ -6,11 +6,13 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * {@link LocalPasswordSecurityValidator} (b2-2, B2-2/2, B2-2/3): length, context terms, blocklist.
+ * {@link LocalPasswordSecurityValidator} (b2-2, B2-2/2, B2-2/3; b2-5, B2-5/P1, P2): length (12 to
+ * 128), the bundled breached-password list, context terms, blocklist.
  */
 class LocalPasswordSecurityValidatorTest {
 
-    private final LocalPasswordSecurityValidator validator = new LocalPasswordSecurityValidator();
+    private final LocalPasswordSecurityValidator validator =
+            new LocalPasswordSecurityValidator(new BreachedPasswords());
 
     @Test
     void aGenuinelyStrongPasswordHasNoViolations() {
@@ -78,6 +80,55 @@ class LocalPasswordSecurityValidatorTest {
                         "iloveyou123456")) {
             assertThat(validator.validate(weak, List.of())).as(weak).isNotEmpty();
         }
+    }
+
+    // ---- b2-5: maximum length (B2-5/P2) ----
+
+    @Test
+    void exactly128CharactersIsAcceptedAnd129IsRejected() {
+        String base = "xk9$mQ2vTz8!wLp4";
+        String longest = base.repeat(8); // 128 characters
+        assertThat(longest).hasSize(128);
+
+        assertThat(validator.validate(longest, List.of())).isEmpty();
+        assertThat(validator.validate(longest + "x", List.of()))
+                .containsExactly("Password must be at most 128 characters long.");
+    }
+
+    // ---- b2-5: breached-password list (B2-5/P1) ----
+
+    @Test
+    void aPasswordOnTheBreachedListIsRejectedWhateverItsCase() {
+        for (String breached : List.of("01telemike01", "01TeleMike01", "1234567890QWERTY")) {
+            assertThat(validator.validate(breached, List.of()))
+                    .as(breached)
+                    .containsExactly(
+                            "This password has appeared in a data breach. Choose a different"
+                                    + " one.");
+        }
+    }
+
+    @Test
+    void theBreachedCheckIsAnExactMatchNotASubstringMatch() {
+        // Contains a listed entry, but is not itself one.
+        assertThat(validator.validate("zq-01telemike01-vp", List.of())).isEmpty();
+    }
+
+    @Test
+    void aBreachedPasswordIsNeverEchoedInTheMessage() {
+        assertThat(validator.validate("01telemike01", List.of()))
+                .noneMatch(message -> message.toLowerCase().contains("telemike"));
+    }
+
+    @Test
+    void theBundledListIsLoadedAndHoldsOnlyEntriesThePolicyCouldAccept() {
+        BreachedPasswords list = new BreachedPasswords();
+
+        assertThat(list.size()).isGreaterThan(40_000);
+        assertThat(list.contains("01telemike01")).isTrue();
+        assertThat(list.contains(null)).isFalse();
+        // Entries shorter than the minimum were dropped when the file was built.
+        assertThat(list.contains("123456")).isFalse();
     }
 
     @Test

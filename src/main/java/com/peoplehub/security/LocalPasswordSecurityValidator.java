@@ -7,18 +7,28 @@ import java.util.Set;
 import org.springframework.stereotype.Component;
 
 /**
- * The only {@link PasswordSecurityValidator} implementation for {@code b2-2} (B2-2/2, B2-2/3's
- * sibling decision on password policy): length, a check against context terms (organization name,
- * person's name, email local part), and a small blocklist of well-known weak passwords. No forced
- * character-class complexity rule (uppercase/lowercase/digit/symbol mix) -- length and a blocklist
- * are the current evidence-based approach; a composition rule tends to push people toward
- * predictable substitutions instead of a genuinely stronger password. No external breached-password
- * API call: that remains a future implementation of {@link PasswordSecurityValidator}.
+ * The password policy (b2-2, B2-2/2; b2-5, B2-5/P1, P2), the one policy used wherever a password is
+ * set: registration, invitation acceptance and, from b2-5, reset and change. Length (12 to 128
+ * characters), the offline breached-password list ({@link BreachedPasswords}), a check against
+ * context terms (organization name, person's name, email local part), and a small blocklist of
+ * well-known weak patterns. No forced character-class rule (uppercase/lowercase/digit/symbol mix):
+ * length plus a breached list is the current evidence-based approach (NIST SP 800-63B), and a
+ * composition rule tends to push people toward predictable substitutions. No external API call; a
+ * k-anonymity breach API could be added later as another {@link PasswordSecurityValidator}.
  */
 @Component
 public class LocalPasswordSecurityValidator implements PasswordSecurityValidator {
 
     static final int MIN_LENGTH = 12;
+
+    /** b2-5 (B2-5/P2): a generous cap that still bounds the work done on untrusted input. */
+    static final int MAX_LENGTH = 128;
+
+    private final BreachedPasswords breachedPasswords;
+
+    public LocalPasswordSecurityValidator(BreachedPasswords breachedPasswords) {
+        this.breachedPasswords = breachedPasswords;
+    }
 
     /**
      * A context term shorter than this is ignored: a short term (for example a two-letter initials
@@ -71,6 +81,15 @@ public class LocalPasswordSecurityValidator implements PasswordSecurityValidator
             violations.add("Password must be at least " + MIN_LENGTH + " characters long.");
             // Every further check compares against the password's content; with none worth
             // trusting, stop here rather than pile on confusing follow-on messages.
+            return violations;
+        }
+        if (rawPassword.length() > MAX_LENGTH) {
+            violations.add("Password must be at most " + MAX_LENGTH + " characters long.");
+            return violations;
+        }
+        if (breachedPasswords.contains(rawPassword)) {
+            // A known-breached password is rejected outright; the other checks add nothing.
+            violations.add("This password has appeared in a data breach. Choose a different one.");
             return violations;
         }
 
