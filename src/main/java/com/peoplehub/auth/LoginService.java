@@ -10,7 +10,9 @@ import com.peoplehub.organization.OrganizationLoginKeys;
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.security.SecureTokens;
 import java.net.InetAddress;
+import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Instant;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -30,9 +32,16 @@ import org.springframework.transaction.annotation.Transactional;
  * runs exactly one Argon2 verification: against a dummy hash when there is no account, so the
  * response takes as long either way.
  *
- * <p>Every attempt is recorded in {@code login_attempt} (what was typed, the address, the outcome);
- * nothing enforces lockout yet (b2-5). A successful login opens a session and is audited in the
- * same transaction. A failed one writes no audit row: it has no tenant to belong to (B0-6/16).
+ * <p>Every attempt is recorded in {@code login_attempt} (what was typed, the address, the outcome).
+ * A successful login opens a session and is audited in the same transaction. A failed one writes no
+ * audit row of its own (B0-6/16, B2-3/17).
+ *
+ * <p>Per-account lockout (b2-5, B2-5/P3, P4, R2, R3): a failed attempt on a known account that is
+ * not locked is counted by {@link FailedSignIns}, which locks the account once the threshold is
+ * reached ({@code ACCOUNT_LOCKED}). While an account is locked, every attempt, even with the right
+ * password, fails exactly like a wrong password: same answer, still one Argon2 check, not counted
+ * and never extending the lock. A successful login clears the count. Per-IP lockout is not part of
+ * b2-5 (B2-5/P5).
  *
  * <p>No MFA step exists (MFA/2): MFA is an organization policy built in b2-7.
  */
@@ -41,7 +50,7 @@ public class LoginService {
 
     private static final String SELECT_ACCOUNT =
             "SELECT e.id, e.organization_id, e.role, e.status AS employee_status,"
-                    + " e.password_hash, o.status AS organization_status"
+                    + " e.password_hash, e.locked_until, o.status AS organization_status"
                     + " FROM organization o JOIN employee e ON e.organization_id = o.id"
                     + " WHERE o.login_key_normalized = ? AND e.email_normalized = ?";
 
@@ -55,6 +64,7 @@ public class LoginService {
     private final PasswordHasher passwordHasher;
     private final RefreshTokenService refreshTokenService;
     private final AuditWriter auditWriter;
+    private final FailedSignIns failedSignIns;
 
     /** Verified against when there is no account, so a miss costs the same as a wrong password. */
     private final String dummyHash;
@@ -64,11 +74,13 @@ public class LoginService {
             PasswordHasher passwordHasher,
             SecureTokens secureTokens,
             RefreshTokenService refreshTokenService,
-            AuditWriter auditWriter) {
+            AuditWriter auditWriter,
+            FailedSignIns failedSignIns) {
         this.jdbc = jdbc;
         this.passwordHasher = passwordHasher;
         this.refreshTokenService = refreshTokenService;
         this.auditWriter = auditWriter;
+        this.failedSignIns = failedSignIns;
         this.dummyHash = passwordHasher.hash(secureTokens.generateRaw());
     }
 
@@ -80,17 +92,29 @@ public class LoginService {
                         .flatMap(key -> findAccount(key, normalizeEmail(request.email())));
 
         String hash = account.map(Account::passwordHash).orElse(null);
+        // Always exactly one Argon2 check, whether the account exists, is locked or not.
         boolean passwordMatches =
                 passwordHasher.matches(request.password(), hash != null ? hash : dummyHash);
+        boolean locked =
+                account.map(found -> failedSignIns.isLocked(found.lockedUntil())).orElse(false);
         boolean success =
-                passwordMatches && hash != null && account.map(Account::isActive).orElse(false);
+                !locked
+                        && passwordMatches
+                        && hash != null
+                        && account.map(Account::isActive).orElse(false);
 
         recordAttempt(request, ip, success);
         if (!success) {
+            // Only a known, unlocked account counts a failure; a locked one is not extended (R3).
+            if (account.isPresent() && !locked) {
+                failedSignIns.recordFailure(
+                        account.get().employeeId(), account.get().organizationId(), ip);
+            }
             return Optional.empty();
         }
 
         Account found = account.get();
+        failedSignIns.clear(found.employeeId(), found.organizationId());
         ActorId.set(found.employeeId().toString());
         OrganizationId.set(found.organizationId());
         SessionTokens tokens =
@@ -120,8 +144,13 @@ public class LoginService {
                                         rs.getString("password_hash"),
                                         ACTIVE.equals(rs.getString("employee_status"))
                                                 && ACTIVE.equals(
-                                                        rs.getString("organization_status"))))
+                                                        rs.getString("organization_status")),
+                                        toInstant(rs.getTimestamp("locked_until"))))
                 .optional();
+    }
+
+    private static Instant toInstant(Timestamp timestamp) {
+        return timestamp == null ? null : timestamp.toInstant();
     }
 
     private void recordAttempt(LoginRequest request, InetAddress ip, boolean success) {
@@ -157,7 +186,8 @@ public class LoginService {
             UUID organizationId,
             String role,
             String passwordHash,
-            boolean isActive) {
+            boolean isActive,
+            Instant lockedUntil) {
 
         @Override
         public String toString() {
