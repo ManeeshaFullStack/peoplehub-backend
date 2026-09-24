@@ -1,5 +1,6 @@
 package com.peoplehub.passwordreset;
 
+import com.peoplehub.auth.CsrfOriginGuard;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.net.InetAddress;
@@ -14,17 +15,19 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * {@code /api/v1/auth/forgot-password} and {@code /reset-password} (b2-5, Spec 8.2, 13.0). Public:
  * the person has no session; the reset code from the email is the only credential for a reset.
- * Neither endpoint uses cookies, so neither needs the CSRF token. HTTP only; the rules live in
- * {@link PasswordResetService}.
+ * Neither endpoint uses cookies, so neither needs the CSRF token; both get the same Origin check as
+ * login (B2-5 R6). HTTP only; the rules live in {@link PasswordResetService}.
  */
 @RestController
 @RequestMapping("/auth")
 public class PasswordResetController {
 
     private final PasswordResetService service;
+    private final CsrfOriginGuard guard;
 
-    public PasswordResetController(PasswordResetService service) {
+    public PasswordResetController(PasswordResetService service, CsrfOriginGuard guard) {
         this.service = service;
+        this.guard = guard;
     }
 
     /** Always 202 with the same message, whether or not an email was sent. */
@@ -32,6 +35,7 @@ public class PasswordResetController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public ForgotPasswordResponse forgotPassword(
             @Valid @RequestBody ForgotPasswordRequest body, HttpServletRequest request) {
+        guard.requireAllowedOrigin(request);
         return service.forgot(body, clientAddress(request));
     }
 
@@ -40,6 +44,7 @@ public class PasswordResetController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void resetPassword(
             @Valid @RequestBody ResetPasswordRequest body, HttpServletRequest request) {
+        guard.requireAllowedOrigin(request);
         service.reset(body, clientAddress(request));
     }
 

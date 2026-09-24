@@ -48,7 +48,7 @@ class PasswordResetStore {
 
     private static final String SELECT_TOKEN_FOR_UPDATE =
             "SELECT t.id, t.organization_id, t.employee_id, t.expires_at, t.consumed_at,"
-                    + " t.invalidated_at, e.name, e.email, e.status AS employee_status,"
+                    + " t.invalidated_at, e.name, e.email, e.status AS employee_status, e.locked_until,"
                     + " o.name AS organization_name, o.status AS organization_status"
                     + " FROM password_reset_token t"
                     + " JOIN employee e ON e.organization_id = t.organization_id"
@@ -155,7 +155,12 @@ class PasswordResetStore {
                         && ACTIVE.equals(rs.getString("organization_status")),
                 rs.getString("name"),
                 rs.getString("email"),
-                rs.getString("organization_name"));
+                rs.getString("organization_name"),
+                toInstant(rs.getTimestamp("locked_until")));
+    }
+
+    private static Instant toInstant(Timestamp timestamp) {
+        return timestamp == null ? null : timestamp.toInstant();
     }
 
     record Account(
@@ -179,7 +184,8 @@ class PasswordResetStore {
             boolean accountActive,
             String employeeName,
             String employeeEmail,
-            String organizationName) {
+            String organizationName,
+            Instant lockedUntil) {
 
         /** Unused, unexpired, not replaced, and its account can still sign in. */
         boolean isUsableAt(Instant now) {

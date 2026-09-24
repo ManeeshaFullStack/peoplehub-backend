@@ -163,6 +163,25 @@ class PasswordResetTest {
                 action);
     }
 
+    /** The attributes of the single audit row of this action, parsed. */
+    private Map<String, Object> auditAttributes(UUID organizationId, String action) {
+        String attributes =
+                jdbc.queryForObject(
+                        "SELECT details -> 'attributes' FROM audit_log"
+                                + " WHERE organization_id = ? AND action = ?",
+                        String.class,
+                        organizationId,
+                        action);
+        return JSON.readValue(attributes, new TypeReference<>() {});
+    }
+
+    private UUID resetRowId(TestIdentities.Employee employee) {
+        return jdbc.queryForObject(
+                "SELECT id FROM password_reset_token WHERE employee_id = ?",
+                UUID.class,
+                employee.id());
+    }
+
     private static Map<String, Object> body(MvcResult result) throws Exception {
         return JSON.readValue(result.getResponse().getContentAsString(), new TypeReference<>() {});
     }
@@ -228,6 +247,9 @@ class PasswordResetTest {
         assertThat((String) audits.get(0).get("details"))
                 .doesNotContain(code)
                 .doesNotContain(employee.email());
+        assertThat(auditAttributes(employee.organizationId(), "PASSWORD_RESET_REQUESTED"))
+                .containsOnlyKeys("requestId")
+                .containsEntry("requestId", resetRowId(employee).toString());
     }
 
     @Test
@@ -367,6 +389,10 @@ class PasswordResetTest {
 
         forgot(inA);
         assertThat(reset(latestCode(inA)).getResponse().getStatus()).isEqualTo(204);
+        // No sessions and no lock: both are recorded as such.
+        assertThat(auditAttributes(inA.organizationId(), "PASSWORD_RESET_COMPLETED"))
+                .containsEntry("revokedSessions", 0)
+                .containsEntry("lockoutCleared", false);
 
         assertThat(resetRows(inB)).isZero();
         assertThat(audits(orgB.id(), "PASSWORD_RESET_REQUESTED")).isEmpty();
@@ -441,9 +467,14 @@ class PasswordResetTest {
                 .containsEntry("target_id", employee.id().toString())
                 .containsEntry("ip", "127.0.0.1");
         assertThat((String) audits.get(0).get("details"))
-                .contains("\"endedSessions\": 2")
                 .doesNotContain(code)
                 .doesNotContain(NEW_PASSWORD);
+        // Two sessions ended, and the reset ended an active lock.
+        assertThat(auditAttributes(employee.organizationId(), "PASSWORD_RESET_COMPLETED"))
+                .containsOnlyKeys("requestId", "revokedSessions", "lockoutCleared")
+                .containsEntry("requestId", resetRowId(employee).toString())
+                .containsEntry("revokedSessions", 2)
+                .containsEntry("lockoutCleared", true);
     }
 
     @Test
@@ -521,6 +552,58 @@ class PasswordResetTest {
         assertThat(breached.getResponse().getStatus()).isEqualTo(400);
         assertThat(breached.getResponse().getContentAsString()).contains("data breach");
 
+        assertThat(login(employee, OLD_PASSWORD).getResponse().getStatus()).isEqualTo(200);
+        assertThat(reset(code).getResponse().getStatus()).isEqualTo(204);
+    }
+
+    /**
+     * No app origin is configured in this context, so CORS has nothing to check and the Origin
+     * guard alone refuses any browser request (B2-5 R6). {@code PasswordResetOriginTest} covers a
+     * configured app origin.
+     */
+    @Test
+    void withNoAppOriginConfiguredAnyBrowserOriginIsForbiddenAndNothingHappens() throws Exception {
+        TestIdentities.Employee employee = employee();
+        forgot(employee);
+        String code = latestCode(employee);
+
+        MvcResult forgotFromBrowser =
+                mvc.perform(
+                                post(FORGOT)
+                                        .header("Origin", "https://app.peoplehub.test")
+                                        .contentType("application/json")
+                                        .content(
+                                                JSON.writeValueAsString(
+                                                        Map.of(
+                                                                "organization",
+                                                                employee.organizationLoginKey(),
+                                                                "email",
+                                                                employee.email()))))
+                        .andReturn();
+        MvcResult resetFromBrowser =
+                mvc.perform(
+                                post(RESET)
+                                        .header("Origin", "https://app.peoplehub.test")
+                                        .contentType("application/json")
+                                        .content(
+                                                JSON.writeValueAsString(
+                                                        Map.of(
+                                                                "token",
+                                                                code,
+                                                                "password",
+                                                                NEW_PASSWORD,
+                                                                "confirmPassword",
+                                                                NEW_PASSWORD))))
+                        .andReturn();
+
+        for (MvcResult result : List.of(forgotFromBrowser, resetFromBrowser)) {
+            assertThat(result.getResponse().getStatus()).isEqualTo(403);
+            assertThat(body(result))
+                    .containsEntry("type", "urn:peoplehub:problem:forbidden")
+                    .containsEntry("detail", "The request could not be verified.");
+        }
+        ageResetRequests(employee, Duration.ofMinutes(6));
+        assertThat(resetRows(employee)).isEqualTo(1);
         assertThat(login(employee, OLD_PASSWORD).getResponse().getStatus()).isEqualTo(200);
         assertThat(reset(code).getResponse().getStatus()).isEqualTo(204);
     }

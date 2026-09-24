@@ -153,6 +153,9 @@ public class PasswordResetService {
                     violations.stream().map(v -> new ApiFieldError("password", v)).toList());
         }
 
+        // Whether this reset ends an active lock (P13); read before the password update clears it.
+        boolean lockoutCleared =
+                reset.lockedUntil() != null && reset.lockedUntil().isAfter(clock.instant());
         boolean passwordSet =
                 store.setPassword(
                         reset.employeeId(),
@@ -163,7 +166,7 @@ public class PasswordResetService {
             // Unreachable while the rows are locked; if it ever happens, nothing is committed.
             throw validationFailure(List.of(new ApiFieldError("token", INVALID_CODE)));
         }
-        int sessionsEnded =
+        int revokedSessions =
                 refreshTokenService.endAllSessionsAfterPasswordReset(
                         reset.organizationId(), reset.employeeId());
 
@@ -176,8 +179,9 @@ public class PasswordResetService {
                         .ip(ip)
                         .details(
                                 AuditDetails.builder()
-                                        .attribute("resetId", reset.id().toString())
-                                        .attribute("endedSessions", sessionsEnded)
+                                        .attribute("requestId", reset.id().toString())
+                                        .attribute("revokedSessions", revokedSessions)
+                                        .attribute("lockoutCleared", lockoutCleared)
                                         .build())
                         .build());
     }
@@ -218,7 +222,7 @@ public class PasswordResetService {
                         .ip(ip)
                         .details(
                                 AuditDetails.builder()
-                                        .attribute("resetId", resetId.toString())
+                                        .attribute("requestId", resetId.toString())
                                         .build())
                         .build());
     }
