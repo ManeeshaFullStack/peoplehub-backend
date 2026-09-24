@@ -95,9 +95,20 @@ class AccessTokenAuthenticationTest {
         assertThat(result.getResponse().getStatus()).isEqualTo(200);
         Map<String, Object> body = body(result);
         assertThat(body)
+                // firstName and welcomeSeenAt: b2-4 (B2-4/O12).
                 .containsOnlyKeys(
-                        "id", "name", "email", "role", "status", "joinDate", "organization")
+                        "id",
+                        "name",
+                        "firstName",
+                        "email",
+                        "role",
+                        "status",
+                        "joinDate",
+                        "welcomeSeenAt",
+                        "organization")
                 .containsEntry("id", employee.id().toString())
+                .containsEntry("firstName", "Jane")
+                .containsEntry("welcomeSeenAt", null)
                 .containsEntry("email", employee.email())
                 .containsEntry("role", "SUPER_ADMIN")
                 .containsEntry("status", "ACTIVE")
