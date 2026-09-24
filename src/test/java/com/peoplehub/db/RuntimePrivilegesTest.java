@@ -76,6 +76,9 @@ class RuntimePrivilegesTest {
                     // b2-2 (V13): SELECT is table-level; INSERT and UPDATE are both column-level on
                     // strict subsets, same reasoning as every table above.
                     Map.entry("organization_verification_token", Set.of("SELECT")),
+                    // b2-5 (V17): SELECT is table-level; INSERT and UPDATE are both column-level on
+                    // strict subsets, same reasoning as every table above.
+                    Map.entry("password_reset_token", Set.of("SELECT")),
                     Map.entry("flyway_schema_history", Set.of()));
 
     private static final Set<String> AUDIT_INSERT_COLUMNS =
@@ -173,7 +176,10 @@ class RuntimePrivilegesTest {
                     "department_id",
                     "name",
                     "default_approver_id",
-                    "updated_at");
+                    "updated_at",
+                    // b2-5 (V16): per-account lockout state.
+                    "failed_login_count",
+                    "locked_until");
 
     /** b2-1 (V10) grants INSERT on exactly these employee_invitation columns. Not id/created_at. */
     private static final Set<String> EMPLOYEE_INVITATION_INSERT_COLUMNS =
@@ -234,6 +240,17 @@ class RuntimePrivilegesTest {
     /** b2-2 (V13) grants UPDATE on exactly this one organization_verification_token column. */
     private static final Set<String> ORGANIZATION_VERIFICATION_TOKEN_UPDATE_COLUMNS =
             Set.of("consumed_at");
+
+    /**
+     * b2-5 (V17) grants INSERT on exactly these password_reset_token columns. Not id/created_at
+     * (database-generated) and not consumed_at/invalidated_at (a new token is never used).
+     */
+    private static final Set<String> PASSWORD_RESET_TOKEN_INSERT_COLUMNS =
+            Set.of("organization_id", "employee_id", "token_hash", "expires_at");
+
+    /** b2-5 (V17) grants UPDATE on exactly these two password_reset_token columns. */
+    private static final Set<String> PASSWORD_RESET_TOKEN_UPDATE_COLUMNS =
+            Set.of("consumed_at", "invalidated_at");
 
     @Autowired private JdbcTemplate jdbc;
 
@@ -897,6 +914,59 @@ class RuntimePrivilegesTest {
                         "SELECT unnest(relacl)::text FROM pg_class"
                                 + " WHERE oid ="
                                 + " 'public.organization_verification_token'::regclass",
+                        String.class);
+
+        assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void passwordResetTokenInsertIsGrantedOnExactlyTheFourWriterColumns() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'password_reset_token'",
+                        String.class)) {
+            Boolean canInsert =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.password_reset_token', ?,"
+                                    + " 'INSERT')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canInsert)
+                    .as("INSERT on password_reset_token." + column)
+                    .isEqualTo(PASSWORD_RESET_TOKEN_INSERT_COLUMNS.contains(column));
+        }
+        assertThat(PASSWORD_RESET_TOKEN_INSERT_COLUMNS)
+                .doesNotContain("id", "created_at", "consumed_at", "invalidated_at");
+    }
+
+    @Test
+    void passwordResetTokenUpdateIsGrantedOnlyOnConsumedAtAndInvalidatedAt() {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns"
+                                + " WHERE table_name = 'password_reset_token'",
+                        String.class)) {
+            Boolean canUpdate =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, 'public.password_reset_token', ?,"
+                                    + " 'UPDATE')",
+                            Boolean.class,
+                            ROLE,
+                            column);
+            assertThat(canUpdate)
+                    .as("UPDATE on password_reset_token." + column)
+                    .isEqualTo(PASSWORD_RESET_TOKEN_UPDATE_COLUMNS.contains(column));
+        }
+    }
+
+    @Test
+    void passwordResetTokenGrantsNothingToPublic() {
+        List<String> acl =
+                jdbc.queryForList(
+                        "SELECT unnest(relacl)::text FROM pg_class"
+                                + " WHERE oid = 'public.password_reset_token'::regclass",
                         String.class);
 
         assertThat(acl).noneMatch(entry -> entry.startsWith("="));
