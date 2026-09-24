@@ -26,6 +26,10 @@ public final class PublicEndpoints {
                     "/api/v1/auth/login",
                     "/api/v1/auth/refresh",
                     "/api/v1/auth/logout",
+                    // Forgot and reset password (b2-5): the person has no session; a reset is
+                    // authenticated by the single-use code from the email.
+                    "/api/v1/auth/forgot-password",
+                    "/api/v1/auth/reset-password",
                     // Email provider bounce/complaint events, authenticated by an HMAC signature
                     // (b1-4).
                     "/api/v1/webhooks/email/events",

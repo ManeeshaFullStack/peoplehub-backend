@@ -31,6 +31,10 @@ class RefreshTokenStore {
             "UPDATE refresh_token SET revoked = true, revoked_at = ?, revoke_reason = ?"
                     + " WHERE family_id = ? AND NOT revoked";
 
+    private static final String REVOKE_EMPLOYEE =
+            "UPDATE refresh_token SET revoked = true, revoked_at = ?, revoke_reason = ?"
+                    + " WHERE employee_id = ? AND organization_id = ? AND NOT revoked";
+
     private final JdbcClient jdbc;
 
     RefreshTokenStore(JdbcClient jdbc) {
@@ -88,11 +92,28 @@ class RefreshTokenStore {
                 .update();
     }
 
-    /** Why a token was revoked; mirrors V14's {@code ck_refresh_token_revoke_reason}. */
+    /**
+     * Revokes every still-usable token of one employee, in every family; returns how many were
+     * revoked. Qualified by the organization as well as the employee (Spec 15.1).
+     */
+    int revokeEmployee(UUID employeeId, UUID organizationId, RevokeReason reason, Instant at) {
+        return jdbc.sql(REVOKE_EMPLOYEE)
+                .param(Timestamp.from(at))
+                .param(reason.name())
+                .param(employeeId)
+                .param(organizationId)
+                .update();
+    }
+
+    /**
+     * Why a token was revoked; values of V16's {@code ck_refresh_token_revoke_reason} (its {@code
+     * PASSWORD_CHANGED} arrives with change password).
+     */
     enum RevokeReason {
         ROTATED,
         LOGOUT,
-        REUSE_DETECTED
+        REUSE_DETECTED,
+        PASSWORD_RESET
     }
 
     record StoredRefreshToken(

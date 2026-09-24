@@ -183,6 +183,16 @@ peoplehub:
       threshold: 5
       initial: PT1M
       max: PT30M
+    # Password reset (b2-5, B2-5/P7, P8): a reset code is valid for `ttl` and used once. The
+    # forgot-password throttle allows one reset email per account per `min-interval` and at most
+    # `daily-limit` in any 24 hours; beyond that the request is answered identically and nothing is
+    # sent. Internal settings, not organization-configurable. Override with
+    # PEOPLEHUB_AUTH_PASSWORD_RESET_TTL, PEOPLEHUB_AUTH_PASSWORD_RESET_MIN_INTERVAL,
+    # PEOPLEHUB_AUTH_PASSWORD_RESET_DAILY_LIMIT.
+    password-reset:
+      ttl: PT30M
+      min-interval: PT5M
+      daily-limit: 5
 
   # Invitations (b2-4, B2-4/O3): how long an invitation can be accepted. An internal setting, not
   # organization-configurable. Override with PEOPLEHUB_INVITATION_TTL.

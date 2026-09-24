@@ -174,6 +174,18 @@ public class RefreshTokenService {
         audit(token, "LOGOUT", ip);
     }
 
+    /**
+     * Ends every session of an employee after a completed password reset (b2-5, B2-5/P13; Spec
+     * 8.2): all their refresh tokens are revoked ({@code PASSWORD_RESET}), and so, through the
+     * per-request session check (B2-3/14), are their access tokens. Returns how many tokens were
+     * revoked. The caller audits the reset itself.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int endAllSessionsAfterPasswordReset(UUID organizationId, UUID employeeId) {
+        return store.revokeEmployee(
+                employeeId, organizationId, RevokeReason.PASSWORD_RESET, clock.instant());
+    }
+
     private void audit(StoredRefreshToken token, String action, InetAddress ip) {
         auditWriter.append(
                 AuditEvent.builder(token.organizationId(), action)
