@@ -503,6 +503,111 @@ list, revoke-one, logout-all and deactivation (`b2-6`); MFA, step-up and promoti
 an organization's MFA requirement); RLS (`b2-8`); Admin-triggered resets and Admin-set passwords (never; D24);
 notifications; the frontend reset page (F1).
 
+### B2-6 decisions (owner-approved 2026-09-24; recorded here so they survive a session or repo reset)
+
+Cite as "B2-6/4" and so on (never a bare `D#`, which is the spec's). Scope:
+`feature/b2-6-sessions-deactivation-revoke` — the signed-in employee's sessions list, revoke-one and revoke-others, and
+employee deactivation and reactivation with immediate revocation of access. Not yet implemented; this locks the design
+before coding. Spec basis: D26, §2.1.7, §3.2, §3.3, §8.2, §13.0, §13 (Security and Admin — employees rows), §15.1,
+§22.1.
+
+**Sessions**
+
+- **B2-6/1 — A session is a refresh-token family.** Its id is the family id (the access token's `sid`, B2-3/4). It is
+  *active* while its family has a token that is not revoked and whose sliding expiry has not passed. Nothing new is
+  stored to track sessions.
+- **B2-6/2 — `GET /me/sessions`**, the caller's own active sessions only (employee and organization from the token). A
+  list endpoint, so it is paginated like every other (`PageQuery`/`PageResponse`, size default 20, max 100; §6 of this
+  file). Each item: `sessionId`, `current` (true for the calling session), `deviceLabel`, `createdAt` (sign-in time),
+  `lastUsedAt` (last refresh), `expiresAt`, `absoluteExpiresAt`. Sortable by `createdAt` and `lastUsedAt`; default
+  `lastUsedAt,desc`. No token, token hash or IP is ever returned.
+- **B2-6/3 — Device label: coarse browser and operating system.** `refresh_token.device_label` has stayed empty since
+  B2-3/10. At login, a coarse label is derived from the `User-Agent` by a few built-in rules, browser family and
+  operating system only (for example "Chrome on Windows"), at most 64 characters, with a safe fallback such as "Unknown
+  device" when nothing matches; it is copied to each rotated token. Never the raw `User-Agent` and never the IP
+  (fingerprinting and personal-data minimisation). No external dependency.
+- **B2-6/4 — `DELETE /me/sessions/{sessionId}`** revokes one of the caller's own sessions (all tokens of that family).
+  Revoking the current session is allowed and acts as a logout from this device. A session id that is not one of the
+  caller's active sessions (unknown, already ended, another employee's, another organization's) is one 404. 204.
+- **B2-6/5 — `POST /me/sessions/revoke-others`** is the spec's "revoke all others" (§8.2) and the logout-all that B2-3/9
+  deferred: every session of the caller except the calling one ends. 204, with nothing to revoke included. No separate
+  "log out everywhere including here": that is revoke-others followed by the existing logout.
+- **B2-6/6 — New revoke reasons**, added to `refresh_token.revoke_reason` by a forward migration (the V14/V16 CHECK
+  pattern): `SESSION_REVOKED` (revoke-one and revoke-others) and `DEACTIVATED`. No new columns and no new grants: the
+  runtime role can already update `revoked`, `revoked_at` and `revoke_reason`.
+
+**Deactivation and reactivation**
+
+- **B2-6/7 — Endpoints:** `POST /admin/employees/{id}/deactivate` and `POST /admin/employees/{id}/reactivate` (§13.0,
+  §13). 204. Deactivation is not in the spec's step-up list (§8.3), so no step-up.
+- **B2-6/8 — Who may act on whom** (service-layer check on the caller's database role, B2-4's minimal pattern; the full
+  matrix is `b3-1`):
+
+  | Caller | Employee | Admin | Super Admin | Themselves |
+  |---|---|---|---|---|
+  | Admin | allowed | 403 | 403 | 403 |
+  | Super Admin | allowed | allowed | allowed (another Super Admin) | 403 |
+
+  An id from another organization, or an unknown id, is a **404**, never a 403 (D22, §15.1). A 403 is only ever given
+  inside the caller's own organization, where the target's existence is not a secret (the B2-4/O8 treatment).
+- **B2-6/9 — The last Super Admin cannot be deactivated.** Since nobody may deactivate themselves (B2-6/8) and only a
+  Super Admin may deactivate a Super Admin, deactivation can never remove the last active one. The explicit
+  last-Super-Admin guard for demotion and tombstoning stays in `b3-4` (§3.3); b2-6 adds a test proving the invariant.
+- **B2-6/10 — Which states.** `ACTIVE` and `INVITED` employees can be deactivated; `PENDING_VERIFICATION` (an
+  unverified founder), `DEACTIVATED` and `DELETED_TOMBSTONE` cannot (409). Only `DEACTIVATED` can be reactivated (409
+  otherwise). Reactivation returns the employee to `ACTIVE` if they have a password, or to `INVITED` if they never
+  accepted their invitation (an Admin then resends it, B2-4/O8).
+- **B2-6/11 — What deactivation does, in one transaction** (the employee row is locked first):
+  1. `status = DEACTIVATED`. The request body may carry an optional `exitDate`, stored as `exit_date`; it cannot be in
+     the future (a 400; "today" is the organization's timezone). When it is omitted, `exit_date` stays empty: the
+     server never fills in a date on its own.
+  2. Every refresh-token family of the employee is revoked (`DEACTIVATED`). Access tokens stop working at the next
+     request through the existing per-request status check (B2-3/14), so no token outlives the deactivation.
+  3. An open invitation of an `INVITED` employee is revoked (the item B2-4 left to b2-6).
+  4. Unused password-reset codes are invalidated (already unusable while the account is not active, B2-5/P11; this
+     makes it permanent).
+  5. `EMPLOYEE_DEACTIVATED` is audited.
+
+  Kept unchanged: the password hash, the lockout counters, invitations the person sent (organization-level, still
+  valid), and every historical row (attendance, leave, approvals and audit arrive later and point at the same row).
+- **B2-6/12 — A concurrent refresh cannot outlive a deactivation.** Required behaviour: a refresh and a deactivation
+  running at the same time can never leave a usable session once the deactivation has completed. The risk is a refresh
+  that read `ACTIVE` just before the deactivation committed and inserts a successor token the deactivation's revocation
+  never saw; that token would be unusable while deactivated, but a later reactivation would revive it. The
+  implementation chooses the correct database locking approach, and a parallel test proves the behaviour.
+- **B2-6/13 — What reactivation does:** status as B2-6/10, `exit_date` cleared, `EMPLOYEE_REACTIVATED` audited. No
+  session comes back: the person signs in again. Password, role and lockout counters are as they were (§3.3 "restores
+  prior access exactly as it was"). A future MFA policy still applies at the next sign-in (`b2-7`).
+- **B2-6/14 — Login, refresh and reset after deactivation** need no new code: login and refresh already require
+  `ACTIVE` and answer with the same generic 401 (B2-3/12); forgot-password already sends nothing (B2-5/P11). b2-6 adds the
+  tests that prove each one for a deactivated Employee, Admin and Super Admin.
+
+**Audit**
+
+- **B2-6/15 — Events**, through `AuditWriter` in the same transaction, ids and counts only (B0-6/8, B0-6/11):
+  `EMPLOYEE_DEACTIVATED` (actor the Admin/Super Admin; target `EMPLOYEE`/id; attributes `role`, `revokedSessions`,
+  `invitationRevoked`), `EMPLOYEE_REACTIVATED` (attributes `role`, `status`), `SESSION_REVOKED` (actor and target the
+  employee; attribute `sessionId`; also when it is the current session) and `OTHER_SESSIONS_REVOKED` (attribute
+  `revokedSessions`). Failed attempts (403, 404, 409) are not audited.
+
+**Tenant isolation**
+
+- **B2-6/16 — Tenant scope only from the token.** Every query is qualified by the caller's organization and, for
+  `/me/sessions`, the caller's employee id; no organization or employee id is ever taken from the request except the
+  path id of the target employee, which is resolved inside the caller's organization. Tests cover another
+  organization's employee id and session id (404, nothing changed) and the same email in two organizations.
+
+**Deferred to their planned branches, not built in `b2-6`:** closing an open attendance session with `DEACTIVATION`
+(B4, §4.3); revoking paired device authorization (B5); reassigning pending approvals and cancelling the person's
+pending requests (B7, §6.5, §7.2); cutting an open SSE stream (no production SSE endpoint exists yet; when one is built it
+must end a deactivated employee's stream, §22.1); "admin deactivated/reactivated" notifications (§9.1, as B2-4/O14);
+the employee directory and employee CRUD (`b3-3`); the last-Super-Admin guard for demotion and tombstoning (`b3-4`);
+MFA and step-up (`b2-7`); RLS (`b2-8`); rate limiting (`b13-1`).
+
+**Spec note (no conflict, recorded):** spec §17 lists "deactivation/revocation" under B2 and "employee CRUD/deactivate"
+under `b3-3`. Reading used here: `b2-6` builds deactivation, reactivation and the revocation; `b3-3` builds employee
+CRUD and the directory and reuses them.
+
 ### B0-4 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
 
 - **D1 — Health endpoints.** Split into `/actuator/health/liveness` and `/actuator/health/readiness`. The Dockerfile
