@@ -10,7 +10,6 @@ import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.common.logging.OrganizationId;
 import com.peoplehub.security.SecureTokens;
 import com.peoplehub.security.jwt.AccessTokenIssuer;
-import com.peoplehub.security.principal.PrincipalStatusQuery;
 import java.net.InetAddress;
 import java.time.Clock;
 import java.time.Duration;
@@ -56,7 +55,7 @@ public class RefreshTokenService {
     private final RefreshTokenStore store;
     private final SecureTokens secureTokens;
     private final AccessTokenIssuer accessTokenIssuer;
-    private final PrincipalStatusQuery statusQuery;
+    private final ActiveEmployeeLock activeEmployeeLock;
     private final AuditWriter auditWriter;
     private final Clock clock;
     private final Duration slidingTtl;
@@ -66,7 +65,7 @@ public class RefreshTokenService {
             RefreshTokenStore store,
             SecureTokens secureTokens,
             AccessTokenIssuer accessTokenIssuer,
-            PrincipalStatusQuery statusQuery,
+            ActiveEmployeeLock activeEmployeeLock,
             AuditWriter auditWriter,
             Clock clock,
             @Value("${peoplehub.auth.refresh-token.sliding-ttl}") Duration slidingTtl,
@@ -81,7 +80,7 @@ public class RefreshTokenService {
         this.store = store;
         this.secureTokens = secureTokens;
         this.accessTokenIssuer = accessTokenIssuer;
-        this.statusQuery = statusQuery;
+        this.activeEmployeeLock = activeEmployeeLock;
         this.auditWriter = auditWriter;
         this.clock = clock;
         this.slidingTtl = slidingTtl;
@@ -119,7 +118,17 @@ public class RefreshTokenService {
     /** Rotates a refresh token; empty means "sign in again", whatever the reason (B2-3/12). */
     @Transactional
     public Optional<SessionTokens> refresh(String rawToken, InetAddress ip) {
-        Optional<StoredRefreshToken> found = store.findForUpdate(secureTokens.hash(rawToken));
+        String tokenHash = secureTokens.hash(rawToken);
+        Optional<RefreshTokenStore.Owner> owner = store.owner(tokenHash);
+        if (owner.isEmpty()) {
+            return Optional.empty();
+        }
+        // The employee row first (shared lock, while active), then the token row: a concurrent
+        // deactivation either finishes before this refresh or revokes its new token (B2-6/12).
+        Optional<String> role =
+                activeEmployeeLock.forRefresh(
+                        owner.get().employeeId(), owner.get().organizationId());
+        Optional<StoredRefreshToken> found = store.findForUpdate(tokenHash);
         if (found.isEmpty()) {
             return Optional.empty();
         }
@@ -140,9 +149,8 @@ public class RefreshTokenService {
         if (!token.expiresAt().isAfter(now)) {
             return Optional.empty();
         }
-        Optional<String> role =
-                statusQuery.activeRole(
-                        token.employeeId(), token.organizationId(), token.familyId());
+        // The employee and organization must still be ACTIVE; the session itself is live, since
+        // the presented token is unrevoked, unexpired and locked.
         if (role.isEmpty()) {
             return Optional.empty();
         }

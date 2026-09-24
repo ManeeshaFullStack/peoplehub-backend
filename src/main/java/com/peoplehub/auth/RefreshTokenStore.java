@@ -20,6 +20,9 @@ class RefreshTokenStore {
                     + " expires_at, absolute_expires_at, device_label)"
                     + " VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id";
 
+    private static final String SELECT_OWNER =
+            "SELECT employee_id, organization_id FROM refresh_token WHERE token_hash = ?";
+
     private static final String SELECT_FOR_UPDATE =
             "SELECT id, organization_id, employee_id, family_id, expires_at, absolute_expires_at,"
                     + " revoked, revoke_reason, device_label FROM refresh_token WHERE token_hash = ?"
@@ -66,6 +69,21 @@ class RefreshTokenStore {
                 .param(deviceLabel)
                 .query(UUID.class)
                 .single();
+    }
+
+    /**
+     * Whose token this hash is, read without a lock, so a refresh can lock the employee row before
+     * the token row (the lock order {@link ActiveEmployeeLock} describes).
+     */
+    Optional<Owner> owner(String tokenHash) {
+        return jdbc.sql(SELECT_OWNER)
+                .param(tokenHash)
+                .query(
+                        (rs, rowNum) ->
+                                new Owner(
+                                        rs.getObject("employee_id", UUID.class),
+                                        rs.getObject("organization_id", UUID.class)))
+                .optional();
     }
 
     /**
@@ -145,6 +163,8 @@ class RefreshTokenStore {
         SESSION_REVOKED,
         DEACTIVATED
     }
+
+    record Owner(UUID employeeId, UUID organizationId) {}
 
     record StoredRefreshToken(
             UUID id,
