@@ -22,7 +22,8 @@ class RefreshTokenStore {
 
     private static final String SELECT_FOR_UPDATE =
             "SELECT id, organization_id, employee_id, family_id, expires_at, absolute_expires_at,"
-                    + " revoked, device_label FROM refresh_token WHERE token_hash = ? FOR UPDATE";
+                    + " revoked, revoke_reason, device_label FROM refresh_token WHERE token_hash = ?"
+                    + " FOR UPDATE";
 
     private static final String REVOKE_ROTATED =
             "UPDATE refresh_token SET revoked = true, revoked_at = ?, revoke_reason = 'ROTATED',"
@@ -84,6 +85,7 @@ class RefreshTokenStore {
                                         rs.getTimestamp("expires_at").toInstant(),
                                         rs.getTimestamp("absolute_expires_at").toInstant(),
                                         rs.getBoolean("revoked"),
+                                        rs.getString("revoke_reason"),
                                         rs.getString("device_label")))
                 .optional();
     }
@@ -154,5 +156,6 @@ class RefreshTokenStore {
             Instant expiresAt,
             Instant absoluteExpiresAt,
             boolean revoked,
+            String revokeReason,
             String deviceLabel) {}
 }
