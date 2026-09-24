@@ -30,10 +30,11 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 - **Multi-organization HR operations SaaS backend** (v9, D21): one deployment can host many organizations, and each one
   behaves as a completely private workspace (hard tenant isolation; see "v9 adoption" below). Scope: attendance
   (server-authoritative sessions), leave, approvals, org/departments, calendar, notifications, reports, audit.
-  Standalone (own auth/org/data). **Built so far in B2 (b2-1 to b2-3):** the organization/tenant/employee schema,
-  organization registration with founder email verification, and password login with JWT, rotating refresh tokens and
-  the tenant context. **Not built yet:** invitations, lockout/reset, sessions/deactivation, MFA and database-level
-  tenant isolation (RLS) arrive in b2-4 to b2-8.
+  Standalone (own auth/org/data). **Built so far in B2 (b2-1 to b2-4):** the organization/tenant/employee schema,
+  organization registration with founder email verification, password login with JWT, rotating refresh tokens and the
+  tenant context, and invitation-only membership (Employee and direct Admin invitations, activation, the welcome
+  state). **Not built yet:** lockout/reset, sessions/deactivation, MFA and database-level tenant isolation (RLS) arrive
+  in b2-5 to b2-8.
 - **Stack:** Java 21, Spring Boot (modular monolith, **package-by-feature**), PostgreSQL (`timestamptz` everywhere,
   `btree_gist`), Flyway (forward-only), Redis (refresh-token families, rate limiting, presence, Spring Cache),
   Jakarta Validation, Logback JSON + MDC, `@Scheduled` + ShedLock, provider-agnostic `EmailService` + transactional
@@ -61,10 +62,10 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   foundation, templates/retry/sending, in-app notifications + SSE, bounce/complaint suppression;
   PRs #11, #12, #13, #15). **B1 (Email & notification platform) complete.** See §13 for the
   branch-by-branch detail.
-- **B2 status:** b2-1, b2-2 and b2-3 are merged (organization/tenant/employee schema V8-V12, PR #17; organization
-  registration and founder verification V13, PR #20; password login, JWT and refresh-token rotation V14, PR #23).
-  **Next: `b2-4-invite-activation-admin-invite`.** B2 is not complete (b2-4 to b2-8 remain). See §13 for the
-  branch-by-branch detail.
+- **B2 status:** b2-1, b2-2, b2-3 and b2-4 are merged (organization/tenant/employee schema V8-V12, PR #17;
+  organization registration and founder verification V13, PR #20; password login, JWT and refresh-token rotation V14,
+  PR #23; invitations, activation and the welcome state V15, PR #26). **Next: `b2-5-password-policy-lockout-reset`.**
+  B2 is not complete (b2-5 to b2-8 remain). See §13 for the branch-by-branch detail.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15 item 12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
@@ -382,8 +383,8 @@ tenant context, a minimal `/me`, and audit events for those actions. **Implement
 Cite as "B2-4/O4" and so on (never a bare `D#`, which is the spec's). Scope:
 `feature/b2-4-invite-activation-admin-invite` — Employee invitations (Admin or Super Admin), direct Admin invitations
 (Super Admin), resend and revoke, public preview and acceptance (the invitee sets their own password), the invitation
-email through the outbox, audit rows, and the one-time welcome state. Not yet implemented; this locks the design before
-coding. Spec basis: D24, D25, §2.1.5, §3.3, §8.2, §9.1, §10.2, §10.3, §12.1, §13.0, §15.1.
+email through the outbox, audit rows, and the one-time welcome state. **Implemented and merged (PR #26).** Spec basis:
+D24, D25, §2.1.5, §3.3, §8.2, §9.1, §10.2, §10.3, §12.1, §13.0, §15.1.
 
 - **B2-4/O1 — The employee row is created at invite time** with `status = INVITED`, the invitation's role and no
   password (D25). Accepting the invitation activates that row; no second identity is ever created.
@@ -982,10 +983,14 @@ policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-sch
   registration, founder email verification and resend through the outbox, Argon2id password hashing; PR #20; decisions
   B2-2/1-B2-2/8). **b2-3 is merged** (`feature/b2-3-login-jwt-refresh-tenant-context`: Spring Security deny-by-default
   chain, ES256 JWT access tokens, V14 refresh-token rotation with reuse detection, logout, per-request tenant context,
-  `GET /me`, authentication audit events; PR #23; decisions B2-3/1-B2-3/21). **Next: b2-4** (invitations and
-  activation, direct Admin invite). Still owed inside B2: b2-5 lockout/reset, b2-6 sessions/deactivation, b2-7 MFA
-  (policy per MFA/1-MFA/7; the spec's mandatory-MFA text must be corrected first, §15 item 15), b2-8 RLS and the
-  cross-tenant security suite (B2-3/20). Update this line when a phase merges.
+  `GET /me`, authentication audit events; PR #23; decisions B2-3/1-B2-3/21). **b2-4 is merged**
+  (`feature/b2-4-invite-activation-admin-invite`: V15 `employee_invitation` hardening, Employee and direct Admin
+  invitations through the outbox, public preview and acceptance with the invitee's own password, resend and revoke,
+  invitation audit events, `firstName`/`welcomeSeenAt` on `/me` and `POST /me/welcome/ack`; PR #26; decisions
+  B2-4/O1-B2-4/O15). **Next: b2-5** (password policy, lockout and reset). Still owed inside B2: b2-6
+  sessions/deactivation (including revoking pending invitations on deactivation), b2-7 MFA and Employee → Admin
+  promotion (policy per MFA/1-MFA/7; the spec's mandatory-MFA text must be corrected first, §15 item 15), b2-8 RLS and
+  the cross-tenant security suite (B2-3/20). Update this line when a phase merges.
 
 ## 14. Local environment notes
 
