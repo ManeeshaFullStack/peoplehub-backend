@@ -113,7 +113,10 @@ class EmployeeMigrationTest {
                         "exit_date",
                         "welcome_seen_at",
                         "created_at",
-                        "updated_at");
+                        "updated_at",
+                        // b2-5 (V16): per-account lockout state.
+                        "failed_login_count",
+                        "locked_until");
         assertThat(columns.get("id")).isEqualTo(new Column("uuid", null, "NO"));
         assertThat(columns.get("organization_id")).isEqualTo(new Column("uuid", null, "NO"));
         assertThat(columns.get("department_id")).isEqualTo(new Column("uuid", null, "YES"));

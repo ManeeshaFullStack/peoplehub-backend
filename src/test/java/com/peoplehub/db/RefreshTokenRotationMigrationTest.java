@@ -205,7 +205,11 @@ class RefreshTokenRotationMigrationTest {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
 
-        for (String reason : new String[] {"ROTATED", "LOGOUT", "REUSE_DETECTED"}) {
+        // V14's three reasons, plus PASSWORD_RESET and PASSWORD_CHANGED since V16 (b2-5).
+        for (String reason :
+                new String[] {
+                    "ROTATED", "LOGOUT", "REUSE_DETECTED", "PASSWORD_RESET", "PASSWORD_CHANGED"
+                }) {
             UUID id = insertToken(org, employee);
             jdbc.update(
                     "UPDATE refresh_token SET revoked = true, revoked_at = now(), revoke_reason = ?"

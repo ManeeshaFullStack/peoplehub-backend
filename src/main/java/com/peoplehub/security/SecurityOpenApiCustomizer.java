@@ -22,7 +22,8 @@ import org.springframework.stereotype.Component;
  *   <li>A {@value #SCHEME} scheme: an ES256 JWT in the {@code Authorization} header.
  *   <li>Every operation that is not a {@link PublicEndpoints public endpoint} requires it and can
  *       answer 401 (and 403).
- *   <li>Login, refresh and logout document their own 401/403 answers.
+ *   <li>Login, refresh, logout, forgot password and reset password document their own 401/403
+ *       answers.
  * </ul>
  *
  * Driven by the same list as the security chain, so the document cannot say an endpoint is public
@@ -47,7 +48,11 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                             "401", "The session has ended; sign in again.",
                             "403", "The CSRF token or origin check failed."),
                     "/api/v1/auth/logout",
-                    Map.of("403", "The CSRF token or origin check failed."));
+                    Map.of("403", "The CSRF token or origin check failed."),
+                    "/api/v1/auth/forgot-password",
+                    Map.of("403", "The request came from a foreign origin."),
+                    "/api/v1/auth/reset-password",
+                    Map.of("403", "The request came from a foreign origin."));
 
     @Override
     public void customise(OpenAPI openApi) {

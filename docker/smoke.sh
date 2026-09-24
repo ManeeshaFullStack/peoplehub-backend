@@ -254,6 +254,63 @@ for statement in "update audit_log set action = 'X'" "delete from audit_log" "tr
 done
 
 # ---------------------------------------------------------------------------------------------------------------------
+# The integration tests run the application as the database superuser; here it runs as the least-privileged runtime
+# role, so this proves its grants cover the password flows: the row locks, the lockout counters, the reset rows, session
+# revocation and the audit rows. Runs after the "runtime role can read the audit log" check, which expects no rows.
+section "Password reset, lockout and change as the runtime role (b2-5)"
+api() { curl -sS -H 'Content-Type: application/json' "$@" 2>&1 || true; }
+# Only the status code. No `-o /dev/null`: with MSYS_NO_PATHCONV=1, curl on Windows cannot open it, so the body and
+# the code are captured together and the code is the last three characters (as the /actuator/metrics check does).
+api_status() {
+    local out
+    out="$(curl -sS -w '%{http_code}' -H 'Content-Type: application/json' "$@" 2>&1 || true)"
+    echo "${out: -3}"
+}
+smoke_key="smoke-org-$(secret)"
+smoke_email="smoke.person@example.com"
+first_password="Qx7-$(secret)"
+second_password="Wz4-$(secret)"
+smoke_org="$(psql_admin "with o as (insert into organization (name, login_key_normalized, timezone, status)
+    values ('Smoke Org', '$smoke_key', 'UTC', 'ACTIVE') returning id) select id from o")"
+smoke_employee="$(psql_admin "with e as (insert into employee (organization_id, employee_code, name, email,
+    email_normalized, status, role) values ('$smoke_org', 'SMOKE-1', 'Smoke Person', '$smoke_email', '$smoke_email',
+    'ACTIVE', 'EMPLOYEE') returning id) select id from e")"
+login_body() { printf '{"organization":"%s","email":"%s","password":"%s"}' "$smoke_key" "$smoke_email" "$1"; }
+failed_logins() { psql_admin "select failed_login_count from employee where id = '$smoke_employee'"; }
+
+forgot="$(api_status -d "{\"organization\":\"$smoke_key\",\"email\":\"$smoke_email\"}" \
+    "http://127.0.0.1:$BACKEND_PORT/api/v1/auth/forgot-password")"
+expect_equals "forgot-password answers 202" 202 "$forgot"
+reset_code="$(psql_admin "select payload -> 'attributes' ->> 'resetCode' from email_outbox
+    where organization_id = '$smoke_org' and type = 'PASSWORD_RESET'")"
+if [[ "$reset_code" =~ ^[0-9a-f]{64}$ ]]; then pass "a reset code was issued into the outbox"; else fail "a reset code was issued into the outbox" "got '$reset_code'"; fi
+reset="$(api_status \
+    -d "{\"token\":\"$reset_code\",\"password\":\"$first_password\",\"confirmPassword\":\"$first_password\"}" \
+    "http://127.0.0.1:$BACKEND_PORT/api/v1/auth/reset-password")"
+expect_equals "reset-password with that code answers 204" 204 "$reset"
+wrong="$(api_status -d "$(login_body "not-$first_password")" \
+    "http://127.0.0.1:$BACKEND_PORT/api/v1/auth/login")"
+expect_equals "a wrong password is a 401" 401 "$wrong"
+expect_equals "the failed sign-in was counted" 1 "$(failed_logins)"
+login="$(api -d "$(login_body "$first_password")" "http://127.0.0.1:$BACKEND_PORT/api/v1/auth/login")"
+access_token=""
+if [[ "$login" =~ \"accessToken\":\"([^\"]+)\" ]]; then access_token="${BASH_REMATCH[1]}"; fi
+if [ -n "$access_token" ]; then pass "the new password signs in"; else fail "the new password signs in" "$login"; fi
+expect_equals "a successful sign-in clears the count" 0 "$(failed_logins)"
+change="$(api_status -H "Authorization: Bearer $access_token" \
+    -d "{\"currentPassword\":\"$first_password\",\"newPassword\":\"$second_password\",\"confirmPassword\":\"$second_password\"}" \
+    "http://127.0.0.1:$BACKEND_PORT/api/v1/me/password")"
+expect_equals "change password answers 204" 204 "$change"
+relogin="$(api_status -d "$(login_body "$second_password")" \
+    "http://127.0.0.1:$BACKEND_PORT/api/v1/auth/login")"
+expect_equals "the changed password signs in" 200 "$relogin"
+actions="$(psql_admin "select string_agg(distinct action, ',' order by action) from audit_log
+    where organization_id = '$smoke_org' and action like 'PASSWORD%'")"
+expect_equals "the reset and the change were audited" "PASSWORD_CHANGED,PASSWORD_RESET_COMPLETED,PASSWORD_RESET_REQUESTED" "$actions"
+flow_warnings="$(compose logs --no-color backend 2>&1 | grep -cE '"level":"(WARN|ERROR)"' || true)"
+expect_equals "the backend logged no warnings or errors during the password flow" 0 "$flow_warnings"
+
+# ---------------------------------------------------------------------------------------------------------------------
 section "Redis"
 expect_contains "Redis refuses unauthenticated commands" "NOAUTH" "$(compose exec -T redis redis-cli ping 2>&1 || true)"
 # Single quotes on purpose: $REDIS_PASSWORD must be expanded by the shell INSIDE the container, so the password never

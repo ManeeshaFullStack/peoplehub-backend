@@ -204,8 +204,9 @@ src/main/java/com/peoplehub/            # package-by-feature; root package com.p
   security/                             # filter chain, public endpoints, 401/403, CORS, password hashing
     jwt/                                # ES256 keys, access-token issuing and verification
     principal/                          # AuthenticatedPrincipal: who is calling, and their tenant
-  auth/                                 # login, refresh, logout (see "Authentication")
-  profile/                              # GET /me, welcome acknowledgement
+  auth/                                 # login, refresh, logout, lockout, change password (see "Authentication")
+  profile/                              # GET /me, welcome acknowledgement, POST /me/password
+  passwordreset/                        # forgot and reset password (see "Passwords")
   invitation/                           # invitations: invite, resend, revoke, preview, accept (see "Invitations")
 src/main/resources/
   application.yml                       # non-secret settings only
@@ -268,17 +269,21 @@ class EmployeeController {
 
 ## Authentication
 
-Password login, JWT access tokens and rotating refresh tokens (b2-3; the decisions are "B2-3 decisions" in
-[`CLAUDE.md`](CLAUDE.md)). Not built yet: MFA (b2-7), lockout and password reset (b2-5), sessions list and deactivation
-(b2-6), roles and permissions (b3-1), PostgreSQL row-level security (b2-8).
+Password login, JWT access tokens and rotating refresh tokens (b2-3), and the password policy, lockout, reset and
+change (b2-5; the decisions are "B2-3 decisions" and "B2-5 decisions" in [`CLAUDE.md`](CLAUDE.md)). Not built yet: MFA
+(b2-7), sessions list, logout-all and deactivation (b2-6), roles and permissions (b3-1), PostgreSQL row-level security
+(b2-8), per-IP lockout (with the hosting decision) and request rate limiting (b13-1).
 
 | Endpoint | What it does |
 |---|---|
 | `POST /api/v1/auth/login` | Body `{organization, email, password}`, the same for every role. Returns `{accessToken, tokenType, expiresIn, csrfToken}` and sets the refresh-token and CSRF cookies. Any failure is one generic 401. |
 | `POST /api/v1/auth/refresh` | Rotates the refresh token and returns a new access token and CSRF token. Needs the cookies and `X-CSRF-Token`. |
 | `POST /api/v1/auth/logout` | Ends the current session (its refresh and access tokens stop working immediately). Always 204. Needs `X-CSRF-Token` when a session cookie is sent. |
+| `POST /api/v1/auth/forgot-password` | Body `{organization, email}`. Always 202 with the same message; emails a reset code only to an active account (see "Passwords"). |
+| `POST /api/v1/auth/reset-password` | Body `{token, password, confirmPassword}`: sets a new password with the emailed code and ends every session. 204. |
 | `GET /api/v1/me` | The caller's own profile, including `firstName` (derived from `name` on the server) and `welcomeSeenAt`. |
 | `POST /api/v1/me/welcome/ack` | Records that the one-time welcome screen was seen (`welcomeSeenAt`); later calls change nothing. 204. |
+| `POST /api/v1/me/password` | Body `{currentPassword, newPassword, confirmPassword}`: changes the caller's password; this session stays signed in, every other one ends. 204. |
 
 How a client uses it:
 
@@ -289,8 +294,8 @@ How a client uses it:
   days after login. Refresh one call at a time: the same refresh token used twice is treated as stolen and ends the
   whole session.
 - Send the **CSRF token** from the last login/refresh response body in `X-CSRF-Token` on refresh and logout.
-- Browsers must call from `PEOPLEHUB_SECURITY_APP_ORIGIN` (CORS and an Origin check). Unset means no browser origin
-  is allowed; clients that send no `Origin` header are not affected.
+- Browsers must call from `PEOPLEHUB_SECURITY_APP_ORIGIN` (CORS, and an Origin check on login, refresh, logout, forgot
+  and reset password). Unset means no browser origin is allowed; clients that send no `Origin` header are not affected.
 - Every 401/403 is the standard problem body, and never says which check failed.
 
 In the code, an authenticated controller receives the caller with `@AuthenticationPrincipal AuthenticatedPrincipal`.
@@ -299,6 +304,29 @@ employee id) from the request. It is verified against the database on every requ
 is no longer `ACTIVE`, or a session that was logged out, is rejected at once. A new endpoint is authenticated by
 default; making one public means adding it to `PublicEndpoints` on purpose, and `SecurityBaselineTest` fails for any
 non-public endpoint that answers without a token.
+
+### Passwords
+
+- **Policy** (everywhere a password is set: registration, invitation acceptance, reset, change): 12 to 128 characters,
+  not in the bundled breached-password list, and not containing the organization, the person's name or their email's
+  local part. No composition rules. Only an Argon2id hash is stored. The breached list
+  (`src/main/resources/security/breached-passwords.txt`, checked offline; source and licence in the `.NOTICE.txt` next
+  to it) is loaded at startup, and the application refuses to start without it.
+- **Lockout** (per account): after 5 consecutive failed sign-ins the account is locked for 1 minute, doubling on each
+  further failure up to 30 minutes (`peoplehub.auth.lockout.*`, `PEOPLEHUB_AUTH_LOCKOUT_THRESHOLD`, `_INITIAL`,
+  `_MAX`). A locked account answers exactly like a wrong password, and attempts while locked neither count nor extend
+  the lock. A wrong current password on change password counts too. A successful sign-in or a reset clears it. Each
+  lock is audited (`ACCOUNT_LOCKED`). Per-IP lockout waits for the hosting and trusted-proxy decision.
+- **Forgot and reset:** only an active employee of an active organization gets an email (`PASSWORD_RESET`, with the
+  code as `resetCode`; no link yet). The code is 256 random bits, stored only as a hash, used once, valid for 30
+  minutes, and replaces any earlier unused code. At most one email per account per 5 minutes and 5 per 24 hours
+  (`peoplehub.auth.password-reset.*`, `PEOPLEHUB_AUTH_PASSWORD_RESET_TTL`, `_MIN_INTERVAL`, `_DAILY_LIMIT`). Every
+  unusable code (unknown, expired, used, replaced, or its account no longer active) is the same 400 on `token`. A reset
+  ends every session of the employee and clears the lockout.
+- **Change:** needs the current password; a wrong one is a 400 on `currentPassword`. The session that made the change
+  stays signed in; every other one ends.
+- **Audit:** `PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET_COMPLETED`, `PASSWORD_CHANGED` and `ACCOUNT_LOCKED`, with ids
+  and counts only. Failed sign-ins stay in `login_attempt`. No "your password was changed" notification is sent yet.
 
 ### Signing keys
 

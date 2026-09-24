@@ -73,6 +73,28 @@ class SecurityOpenApiTest {
     }
 
     @Test
+    void forgotAndResetPasswordArePublicAndChangePasswordNeedsTheToken() throws Exception {
+        for (String path : new String[] {"forgot-password", "reset-password"}) {
+            String operation = "$.paths['/api/v1/auth/" + path + "'].post";
+            mvc.perform(get("/v3/api-docs"))
+                    .andExpect(jsonPath(operation + ".security").doesNotExist())
+                    .andExpect(jsonPath(operation + ".responses", not(hasKey("401"))))
+                    .andExpect(
+                            jsonPath(
+                                            operation
+                                                    + ".responses['403'].content['application/problem+json'].schema['$ref']")
+                                    .value(PROBLEM_REF));
+        }
+        mvc.perform(get("/v3/api-docs"))
+                .andExpect(
+                        jsonPath(
+                                "$.paths['/api/v1/me/password'].post.security[0]",
+                                hasKey("bearerAuth")))
+                .andExpect(
+                        jsonPath("$.paths['/api/v1/me/password'].post.responses['401']").exists());
+    }
+
+    @Test
     void thePathCheckAgreesWithTheSecurityChain() {
         assertThat(PublicEndpoints.isPublicPath("/api/v1/auth/login")).isTrue();
         assertThat(PublicEndpoints.isPublicPath("/api/v1/public/organizations/register")).isTrue();

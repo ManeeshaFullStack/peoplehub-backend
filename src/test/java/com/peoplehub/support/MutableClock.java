@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -53,7 +54,9 @@ public final class MutableClock extends Clock {
         @Bean
         @Primary
         MutableClock mutableClock() {
-            return new MutableClock(Instant.now());
+            // Microseconds, the precision PostgreSQL stores, so an instant written from this clock
+            // reads back equal.
+            return new MutableClock(Instant.now().truncatedTo(ChronoUnit.MICROS));
         }
     }
 }

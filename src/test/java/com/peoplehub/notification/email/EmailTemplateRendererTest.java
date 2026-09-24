@@ -52,6 +52,30 @@ class EmailTemplateRendererTest {
     }
 
     @Test
+    void thePasswordResetTemplateCarriesTheCodeAndItsExpiry() {
+        String payload =
+                EmailPayload.builder()
+                        .attribute("appName", "PeopleHub")
+                        .attribute("firstName", "Jane")
+                        .attribute("organizationLoginKey", "acme-corp")
+                        .attribute("resetCode", "AB12CD")
+                        .attribute("expiryMinutes", 30)
+                        .build()
+                        .toJson(JSON);
+
+        EmailTemplateRenderer.Rendered rendered = renderer.render("PASSWORD_RESET", payload);
+
+        // b2-5 (B2-5/P6): the reset email carries the code only, no link yet.
+        assertThat(rendered.subject()).isEqualTo("Reset your PeopleHub password");
+        assertThat(rendered.body())
+                .contains("Hi Jane,")
+                .contains("in the organization acme-corp")
+                .contains(
+                        "Your reset code is AB12CD. It can be used once and expires in 30 minutes.")
+                .doesNotContain("{{");
+    }
+
+    @Test
     void anUnknownTypeFailsWithNoRetryEligibleException() {
         assertThatThrownBy(() -> renderer.render("NO_SUCH_TEMPLATE", payloadJson()))
                 .isInstanceOf(TemplateRenderException.class);
