@@ -42,6 +42,30 @@ class InvitationStore {
                     + " token_hash, inviter_employee_id, expires_at) VALUES (?, ?, ?, ?, ?, ?)"
                     + " RETURNING id";
 
+    /**
+     * An invitation by its token's hash, with its organization and invited employee (same
+     * organization, same email). The tenant comes from the invitation row itself, never from the
+     * caller.
+     */
+    private static final String SELECT_BY_TOKEN_HASH =
+            "SELECT i.id, i.organization_id, i.intended_role, i.expires_at, i.consumed_at,"
+                    + " i.revoked_at, o.name AS organization_name, o.status AS organization_status,"
+                    + " e.id AS employee_id, e.name AS employee_name, e.email AS employee_email,"
+                    + " e.status AS employee_status, e.role AS employee_role"
+                    + " FROM employee_invitation i"
+                    + " JOIN organization o ON o.id = i.organization_id"
+                    + " JOIN employee e ON e.organization_id = i.organization_id"
+                    + " AND e.email_normalized = i.email_normalized"
+                    + " WHERE i.token_hash = ?";
+
+    private static final String CONSUME_INVITATION =
+            "UPDATE employee_invitation SET consumed_at = ?"
+                    + " WHERE id = ? AND consumed_at IS NULL AND revoked_at IS NULL";
+
+    private static final String ACTIVATE_EMPLOYEE =
+            "UPDATE employee SET password_hash = ?, status = 'ACTIVE', updated_at = ?"
+                    + " WHERE id = ? AND organization_id = ? AND status = 'INVITED'";
+
     private final JdbcClient jdbc;
 
     InvitationStore(JdbcClient jdbc) {
@@ -128,7 +152,86 @@ class InvitationStore {
                 .single();
     }
 
+    /** For preview: a plain read, nothing locked. */
+    Optional<TokenInvitation> byTokenHash(String tokenHash) {
+        return queryByTokenHash(SELECT_BY_TOKEN_HASH, tokenHash);
+    }
+
+    /**
+     * For acceptance: the invitation and employee rows stay locked until the transaction ends, so
+     * two acceptances of one token run one after the other and only the first succeeds.
+     */
+    Optional<TokenInvitation> byTokenHashForUpdate(String tokenHash) {
+        return queryByTokenHash(SELECT_BY_TOKEN_HASH + " FOR UPDATE OF i, e", tokenHash);
+    }
+
+    private Optional<TokenInvitation> queryByTokenHash(String sql, String tokenHash) {
+        return jdbc.sql(sql)
+                .param(tokenHash)
+                .query(
+                        (rs, rowNum) ->
+                                new TokenInvitation(
+                                        rs.getObject("id", UUID.class),
+                                        rs.getObject("organization_id", UUID.class),
+                                        rs.getString("intended_role"),
+                                        rs.getTimestamp("expires_at").toInstant(),
+                                        rs.getTimestamp("consumed_at") != null,
+                                        rs.getTimestamp("revoked_at") != null,
+                                        rs.getString("organization_name"),
+                                        rs.getString("organization_status"),
+                                        rs.getObject("employee_id", UUID.class),
+                                        rs.getString("employee_name"),
+                                        rs.getString("employee_email"),
+                                        rs.getString("employee_status"),
+                                        rs.getString("employee_role")))
+                .optional();
+    }
+
+    /** Marks the invitation used; false if it was already consumed or revoked. */
+    boolean consume(UUID invitationId, Instant at) {
+        return jdbc.sql(CONSUME_INVITATION).param(Timestamp.from(at)).param(invitationId).update()
+                == 1;
+    }
+
+    /** Sets the password and activates an {@code INVITED} employee; false if not invited. */
+    boolean activate(UUID employeeId, UUID organizationId, String passwordHash, Instant at) {
+        return jdbc.sql(ACTIVATE_EMPLOYEE)
+                        .param(passwordHash)
+                        .param(Timestamp.from(at))
+                        .param(employeeId)
+                        .param(organizationId)
+                        .update()
+                == 1;
+    }
+
     record Organization(String name, String loginKey) {}
+
+    /** An invitation found by its token, with what acceptance and preview need. */
+    record TokenInvitation(
+            UUID id,
+            UUID organizationId,
+            String role,
+            Instant expiresAt,
+            boolean consumed,
+            boolean revoked,
+            String organizationName,
+            String organizationStatus,
+            UUID employeeId,
+            String employeeName,
+            String employeeEmail,
+            String employeeStatus,
+            String employeeRole) {
+
+        /** Everything must hold for the token to be usable (B2-4/O4). */
+        boolean isUsableAt(Instant now) {
+            return !consumed
+                    && !revoked
+                    && expiresAt.isAfter(now)
+                    && "ACTIVE".equals(organizationStatus)
+                    && "INVITED".equals(employeeStatus)
+                    && role.equals(employeeRole);
+        }
+    }
 
     record Employee(UUID id, String name, String email, String status, String role) {}
 }
