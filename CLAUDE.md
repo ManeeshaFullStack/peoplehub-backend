@@ -608,6 +608,223 @@ MFA and step-up (`b2-7`); RLS (`b2-8`); rate limiting (`b13-1`).
 under `b3-3`. Reading used here: `b2-6` builds deactivation, reactivation and the revocation; `b3-3` builds employee
 CRUD and the directory and reuses them.
 
+### B2-7 decisions (owner-approved 2026-09-24; recorded here so they survive a session or repo reset)
+
+Cite as "B2-7/4" and so on (never a bare `D#`, which is the spec's). Scope: `feature/b2-7-mfa-stepup-onboarding` — the
+organization MFA policy, TOTP enrollment and sign-in challenge, recovery codes, MFA reset, step-up authentication,
+Employee → Admin promotion, and the founder's onboarding completion. Not yet implemented; this locks the design before
+coding. Builds on the owner's "MFA policy decisions" (MFA/1-MFA/7), which take precedence over the spec's mandatory-MFA
+text. Spec basis: D6 (as amended by MFA/1-MFA/7), D25, §2.1.3, §2.1.4, §2.1.5, §3.2, §3.3, §8.2, §8.3, §11, §13.0,
+§15.1, §22.1.
+
+**Gate before coding:** the spec's mandatory-MFA text (§15 item 15: D6, §2.1.3 step 6, §2.1.5, §3.3, §8.2, §8.3, §11
+`mfa_required_roles`, §15 item 5, §22.1) is corrected through its own `docs:` spec PR, merged, before the `b2-7`
+implementation branch is created (MFA/"Owner-approved implementation decision"). This decisions block does not need it.
+
+**MFA policy and who needs MFA**
+
+- **B2-7/1 — MFA is policy-controlled; the Super Admin sets the organization's policy.** MFA is recommended but not
+  globally mandatory: whether it is enforced, and for whom, is the organization's policy. MFA is optional only during
+  founder/Super Admin registration: the founder registers the organization and becomes its Super Admin without any
+  MFA step (MFA/1). After organization setup the Super Admin controls the organization's MFA enforcement policy
+  (MFA/3-MFA/5), default `DISABLED`:
+  - `DISABLED`: nobody is required; no enrollment offered.
+  - `OPTIONAL`: nobody is required; users may enable MFA voluntarily (reminders encourage it, MFA/7).
+  - `REQUIRED_FOR_ADMINS`: Admin MFA required — every Admin and Super Admin must enroll MFA before any Admin
+    operation; Employees may enable it voluntarily.
+  - `REQUIRED_FOR_ALL`: Admin and Employee MFA required — every user must enroll MFA before accessing any protected
+    feature.
+  - `REQUIRED_FOR_SELECTED_USERS`: required for the people a Super Admin selects; others may enable it voluntarily.
+
+  "Before" is enforced at sign-in: a required person who has not enrolled gets no session until enrollment is
+  confirmed (B2-7/9). Storage: a new `organization.mfa_policy` column (CHECK on the five values, default `DISABLED`)
+  and a new employee-level `employee.mfa_required` flag that supports `REQUIRED_FOR_SELECTED_USERS`; not the spec's
+  `mfa_required_roles` setting, and not the generic org-settings store, which arrives in `b3-6`. All five values ship
+  in `b2-7`.
+- **B2-7/2 — Anyone enrolled is always challenged**, whatever the policy: enrolling is a promise that the password
+  alone no longer signs this person in. `DISABLED` hides enrollment but never switches off an existing enrollment;
+  that takes an explicit disable or reset (B2-7/12).
+- **B2-7/3 — Changing the policy** is Super Admin only, needs step-up (B2-7/14; spec §8.3 "changing security
+  settings") and is audited (`MFA_POLICY_CHANGED`). A change that newly requires MFA for people not enrolled ends
+  their sessions (new revoke reason `MFA_REQUIRED`), so the requirement applies at their next sign-in, with no grace
+  period. The Super Admin making the change is exempt from losing their own current session; if the new policy
+  requires MFA for them, they enroll before their next MFA-protected action (B2-7/15) and at their next sign-in at the
+  latest.
+
+**Enrollment**
+
+- **B2-7/4 — When enrollment happens.**
+  - *Voluntarily*, any time the policy is not `DISABLED`: `POST /me/mfa/enrol` then `POST /me/mfa/confirm` from a
+    signed-in session. This is also how someone the policy requires to have MFA enrolls before an MFA-protected action
+    (B2-7/15).
+  - *Required at sign-in*: when the policy requires MFA for someone not enrolled, the password step creates no
+    session; it returns an enrollment challenge (B2-7/9), and the session is created only after enrollment is
+    confirmed. This applies the same way to the founder, an invited Employee or Admin, and a promoted Admin.
+  - *Founder setup*: MFA is not part of registration or verification (MFA/1). The founder becomes Super Admin first;
+    the onboarding security step (B2-7/21) then lets them choose the policy and, if they wish, enroll.
+  - *Invitation acceptance* opens no session (B2-4/O5), so it asks for no MFA; the first sign-in applies the policy.
+  - *Promotion* does not require prior enrollment. When the policy requires MFA for Admins, the promoted person
+    enrolls at their next sign-in, before any Admin operation (B2-7/18).
+- **B2-7/5 — Authenticators: TOTP only, plus recovery codes** (MFA/6). RFC 6238, HMAC-SHA1, 6 digits, 30-second step,
+  one step of drift either way; implemented with the JDK's HMAC, no dependency (the `WebhookSignatureVerifier`
+  convention). A code's time step is remembered (`employee.mfa_totp_last_step`), so the same code cannot be used twice.
+  The backend returns an `otpauth://` URI and the frontend draws the QR code. WebAuthn/passkeys, SMS and email codes
+  are not built (deferred, see the end of this block).
+- **B2-7/6 — Enrollment flow.** `enrol` generates a new 160-bit secret, stores it encrypted with `mfa_enabled = false`
+  (pending), and returns the secret and URI once. `confirm` with a valid code sets `mfa_enabled = true`, records
+  `mfa_enrolled_at`, creates 10 recovery codes and returns them once (B2-7/8). Enrolling again while enrolled needs
+  step-up and replaces the secret and every recovery code. An unconfirmed pending secret is simply overwritten by the
+  next `enrol`.
+- **B2-7/7 — Secret storage: AES-256-GCM, never raw.** The secret is encrypted in the application with a key from
+  the environment (`PEOPLEHUB_MFA_ENCRYPTION_KEY`, 32 bytes base64, with a key id for rotation,
+  `PEOPLEHUB_MFA_ENCRYPTION_KEY_ID`, plus previous keys for decryption only, the JWT key pattern B2-3/2). Each value is
+  `keyId:base64(nonce || ciphertext || tag)` with a random 96-bit nonce, and the organization and employee ids as
+  associated data, so a ciphertext copied onto another account fails to decrypt. Stored in the existing
+  `employee.mfa_totp_secret` (V9, "ciphertext only"). The application refuses to start without a valid key, even
+  while every organization is `DISABLED` (fail fast, like the JWT key; Compose, `docker/smoke.sh` and CI get the new
+  variable). No key material or secret ever reaches a log, an error, an audit row or a response other than the
+  one-time enrollment answer.
+- **B2-7/8 — Recovery codes: 10 single-use codes**, each 16 base32 characters (80 bits) shown as four groups of four,
+  returned once and stored only as SHA-256 hashes (the `SecureTokens` discipline; 80 bits need no slow hash).
+  `mfa_recovery_code` gains a required `organization_id` with a composite foreign key to
+  `employee (organization_id, id)` (the V14-V17 tenant pattern). Regenerating them (step-up) replaces all ten.
+  Responses carrying a secret or codes are sent with `Cache-Control: no-store`.
+
+**Sign-in with MFA**
+
+- **B2-7/9 — Challenge after the password.** When the password is right and the person is enrolled (or must enroll),
+  `POST /auth/login` answers 200 with `{mfaRequired: "CHALLENGE" | "ENROLL", challengeToken}` instead of a session:
+  no refresh cookie and no access token. The challenge token is random, stored only as a hash in a new
+  `mfa_challenge` table (organization, employee, purpose, expiry 5 minutes for a challenge and 10 for enrollment,
+  consumed, attempts), single use, and bound to the device label and IP the password step saw.
+  - `POST /auth/mfa/challenge {challengeToken, code | recoveryCode}` completes the sign-in and creates the session.
+  - `POST /auth/mfa/enrol` and `/auth/mfa/enrol/confirm {challengeToken, …}` run B2-7/6 for a required enrollment and
+    then create the session.
+  - Every failure of the password step is still the one generic 401 (B2-3/12); the MFA step only starts after a
+    correct password, so its answers reveal nothing an attacker without the password could use.
+- **B2-7/10 — Wrong codes.** A challenge allows 5 wrong codes, then it is invalidated and the person signs in again.
+  Each wrong code also counts toward the per-account lockout (B2-5/P4, R5 pattern). Failed attempts are not audited
+  (B2-3/17 pattern); the lockout is (`ACCOUNT_LOCKED`).
+- **B2-7/11 — Lost device.** A recovery code signs in once instead of a TOTP code (audited
+  `MFA_RECOVERY_CODE_USED`, with the number left); the person should then enroll a new device or regenerate codes. With
+  no device and no codes left, an authorized person resets their MFA (B2-7/12). A password reset never removes MFA:
+  after a reset the next sign-in is still challenged (B2-5 deferral kept). There is no self-service reset by email,
+  because email alone would bypass the second factor.
+- **B2-7/12 — MFA reset of another person** (spec §3.2, §8.3): an Admin may reset an Employee's MFA; a Super Admin may
+  reset an Admin's or an Employee's. Nobody resets a Super Admin's MFA or their own through this action (403); a Super
+  Admin who has lost their factor uses a recovery code or, failing that, the break-glass procedure (B2-7/13). Step-up
+  required; target resolved inside the caller's organization (404 otherwise, the B2-6/8 treatment). It clears the
+  secret and every recovery code, sets `mfa_enabled = false`, ends every session of the target (new revoke reason
+  `MFA_RESET`) and is audited (`MFA_RESET`). The person enrolls again at next sign-in if the policy requires it.
+  **Disabling one's own MFA** is refused (409) while the policy requires MFA for that person; otherwise it is allowed
+  after a successful step-up (`MFA_DISABLED`).
+- **B2-7/13 — Last Super Admin locked out.** If the only Super Admin loses their device and their codes, nobody inside
+  the organization can reset them. The spec's break-glass runbook (§3.3: server access, audited) covers it; it is
+  documented, not an API, and is deferred (see the end of this block). The onboarding security step warns while fewer
+  than two Super Admins exist (§3.3).
+
+**Step-up authentication**
+
+- **B2-7/14 — What needs step-up.** In `b2-7`: Employee → Admin promotion, MFA reset of another person, changing the
+  organization's MFA policy, disabling one's own MFA, re-enrolling, and regenerating recovery codes. The mechanism is
+  reusable; the spec's other step-up actions adopt it when they are built: deleting an Admin (`b3-4`), bulk import
+  (`b3-5`), device pairing (B5), unlocking a month and exporting the whole organization (B11). Deactivation stays
+  without step-up (B2-6/7).
+- **B2-7/15 — How it is proven.** `POST /me/step-up {password, code?}` (this settles MFA/"Open for b2-7"):
+  - a caller with MFA enabled proves the password **and** a TOTP or recovery code;
+  - a caller the organization's policy requires to have MFA, but who has not enrolled, gets **403** with a new problem
+    type `urn:peoplehub:problem:mfa-enrollment-required`, enrolls first (B2-7/4), then steps up with both;
+  - a caller for whom MFA is not required and who has not enrolled proves the password alone.
+
+  A wrong password or code counts toward the per-account lockout. Success is recorded **server-side against the
+  calling session**, in a new `session_step_up` row (organization, employee, session family id, verified at, method),
+  not in a token claim: it cannot outlive the session, needs no new access token, and ends with the session.
+- **B2-7/16 — Five minutes** (spec §8.3), from the verification's database time. A step-up protected endpoint without a
+  fresh step-up answers **403** with a new problem type `urn:peoplehub:problem:step-up-required`, so the client can
+  prompt and retry. Audited: `STEP_UP_VERIFIED` (method `PASSWORD`, `PASSWORD_AND_TOTP` or
+  `PASSWORD_AND_RECOVERY_CODE`).
+
+**Employee → Admin promotion**
+
+- **B2-7/17 — `POST /super-admin/employees/{id}/promote-admin`** (spec §13.0). Super Admin only (spec §3.2, §3.3, D25);
+  an Admin gets 403. Checks in the B2-6 order: 404 (unknown or another organization's id), 403 (not a Super Admin, or
+  the caller themselves), 403 `step-up-required`, then 409 unless the target is an `ACTIVE` `EMPLOYEE`. MFA
+  enrollment is not a precondition of promotion. An `INVITED` person is invited directly as Admin instead (B2-4); an
+  Admin or Super Admin is already privileged.
+- **B2-7/18 — What promotion does:** role becomes `ADMIN`; every session of the target ends (new revoke reason
+  `ROLE_CHANGED`), so the new role takes effect at their next sign-in. If the organization's policy requires MFA for
+  Admins (`REQUIRED_FOR_ADMINS`, `REQUIRED_FOR_ALL`, or they are selected) and they have not enrolled, that sign-in is
+  an enrollment challenge (B2-7/9): they complete MFA enrollment before any Admin operation. Already enrolled, their MFA
+  is challenged (B2-7/2). Audited `EMPLOYEE_PROMOTED` (attributes `fromRole`, `toRole`). The per-request check already
+  reads the role from the database (B2-3/14).
+- **B2-7/19 — Not in `b2-7`:** demotion (Admin → Employee) and granting Super Admin, which need the explicit
+  last-Super-Admin guard and ownership transfer (§3.3), move to `b3-1`/`b3-4`. Promotion never reduces the number of
+  Super Admins, so no guard is needed for it.
+
+**Onboarding**
+
+- **B2-7/20 — First sign-in after an invitation:** password → MFA enrollment only if the policy requires it (B2-7/9) →
+  session → the existing one-time welcome state (B2-4/O12). With no requirement, the session starts directly and
+  `GET /me` carries an `mfa` object (`enabled`, `required`, `policy`, `showReminder`); the reminder is decided on the
+  server (B2-7/27) and never blocks (MFA/7).
+- **B2-7/21 — Founder onboarding in `b2-7`:** `POST /organization/onboarding/complete` (Super Admin only, idempotent,
+  sets `organization.onboarding_completed_at`, audited `ORGANIZATION_ONBOARDING_COMPLETED`) and the security step (the
+  MFA policy and the founder's own enrollment). The other setup steps of §2.1.4 (work schedule, attendance safeguards,
+  leave basics) need the org-settings API and arrive with `b3-6`; until then the frontend skips them. Choosing the
+  policy is a step-up action (B2-7/14); a founder without MFA steps up with their password (B2-7/15).
+- **B2-7/22 — Incomplete enrollment.** A required enrollment that is abandoned leaves no session and no enabled MFA;
+  its challenge expires (10 minutes) and the next sign-in starts again. There is no access at all before a required
+  enrollment is confirmed, and full access without one when the policy does not require it.
+
+**Security requirements**
+
+- **B2-7/23 — Tenant isolation.** Every query is qualified by the organization and employee from the token, or, for
+  the challenge endpoints, from the challenge row the hashed token finds. Another organization's employee id is 404
+  for promotion and MFA reset. Secrets are bound to their account (B2-7/7), and recovery codes and challenges to their
+  organization by foreign key.
+- **B2-7/24 — Nothing secret in logs, errors or audit rows:** no TOTP secret, `otpauth://` URI, code, recovery code,
+  challenge token, password or encryption key, and no email address in audit details (B0-6/8). Tests assert on whole
+  captured logs and whole response bodies, as in b2-5.
+- **B2-7/25 — Audit events:** `MFA_POLICY_CHANGED`, `MFA_ENROLLED`, `MFA_DISABLED`, `MFA_RESET`,
+  `MFA_RECOVERY_CODE_USED`, `MFA_RECOVERY_CODES_REGENERATED`, `STEP_UP_VERIFIED`, `EMPLOYEE_PROMOTED`,
+  `ORGANIZATION_ONBOARDING_COMPLETED`, all with ids, counts and fixed values only. Successful sign-in stays
+  `LOGIN_SUCCEEDED`, written when the MFA step completes.
+- **B2-7/26 — Rate limiting** is still `b13-1`; until then challenges are limited per challenge (B2-7/10) and per
+  account (lockout).
+
+**MFA reminders**
+
+- **B2-7/27 — Reminders are decided and remembered on the server.** When the organization's policy does not require
+  MFA for a person but recommends it, the system may remind them to enable it (MFA/7).
+  - *Who is eligible:* someone not enrolled and not required, while enrollment is offered: every such person under
+    `OPTIONAL`, and the people not covered by the requirement under `REQUIRED_FOR_ADMINS` (Employees) and
+    `REQUIRED_FOR_SELECTED_USERS` (those not selected). Nobody is reminded under `DISABLED`, and a required person is
+    never "reminded": they meet the enrollment requirement at sign-in instead (B2-7/9).
+  - *Frequency is server-side:* an internal setting, `peoplehub.mfa.reminder-interval` (default `P7D`, `[confirm]`,
+    environment-overridable, not organization-configurable, like B2-3/5).
+  - *Dismissal is server-side:* `POST /me/mfa/reminder/dismiss` (the caller's own, from the token; 204, idempotent)
+    stores the time in a new `employee.mfa_reminder_dismissed_at` column, from the injected `Clock`. Not audited: it
+    changes no security state.
+  - *The server decides when to show it:* `GET /me` returns `mfa.showReminder = true` only while the person is
+    eligible and has never dismissed it or dismissed it at least one interval ago. Whether to show a reminder comes
+    only from that flag, and a dismissal is recorded only through the endpoint; clients hold no reminder state, so
+    clearing browser data, another browser or another device cannot reset the timing. How the reminder looks is
+    frontend work (F1), not part of `b2-7`.
+  - Enrolling ends eligibility; an MFA disable or reset (B2-7/12) makes the person eligible again under the same
+    timing.
+
+**Planned migrations (details in the implementation plan):** `organization.mfa_policy`; `employee.mfa_required`,
+`mfa_enrolled_at`, `mfa_totp_last_step`, `mfa_reminder_dismissed_at`; `mfa_recovery_code.organization_id` with its
+composite foreign key; the `mfa_challenge` and `session_step_up` tables; revoke reasons `MFA_REQUIRED`, `MFA_RESET`,
+`ROLE_CHANGED`. Each with per-table runtime grants and the `RuntimePrivilegesTest` inventory.
+
+**Deferred, not built in `b2-7`:** WebAuthn/passkeys; SMS or email codes (never planned); "remember this device"; a
+configurable grace period for newly required MFA; demotion and granting Super Admin, and ownership transfer
+(`b3-1`/`b3-4`); the break-glass runbook (with B13 operations work); the other §2.1.4 setup steps (`b3-6`); the other
+step-up actions in their own phases (B2-7/14); the security dashboard and MFA coverage reports; MFA notifications
+("your MFA was reset", "new device enrolled"); request rate limiting (`b13-1`); RLS (`b2-8`); the frontend screens
+(F1).
+
 ### B0-4 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
 
 - **D1 — Health endpoints.** Split into `/actuator/health/liveness` and `/actuator/health/readiness`. The Dockerfile
