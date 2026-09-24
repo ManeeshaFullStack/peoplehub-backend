@@ -17,11 +17,12 @@ class RefreshTokenStore {
 
     private static final String INSERT =
             "INSERT INTO refresh_token (organization_id, employee_id, token_hash, family_id,"
-                    + " expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id";
+                    + " expires_at, absolute_expires_at, device_label)"
+                    + " VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id";
 
     private static final String SELECT_FOR_UPDATE =
             "SELECT id, organization_id, employee_id, family_id, expires_at, absolute_expires_at,"
-                    + " revoked FROM refresh_token WHERE token_hash = ? FOR UPDATE";
+                    + " revoked, device_label FROM refresh_token WHERE token_hash = ? FOR UPDATE";
 
     private static final String REVOKE_ROTATED =
             "UPDATE refresh_token SET revoked = true, revoked_at = ?, revoke_reason = 'ROTATED',"
@@ -52,7 +53,8 @@ class RefreshTokenStore {
             String tokenHash,
             UUID familyId,
             Instant expiresAt,
-            Instant absoluteExpiresAt) {
+            Instant absoluteExpiresAt,
+            String deviceLabel) {
         return jdbc.sql(INSERT)
                 .param(organizationId)
                 .param(employeeId)
@@ -60,6 +62,7 @@ class RefreshTokenStore {
                 .param(familyId)
                 .param(Timestamp.from(expiresAt))
                 .param(Timestamp.from(absoluteExpiresAt))
+                .param(deviceLabel)
                 .query(UUID.class)
                 .single();
     }
@@ -80,7 +83,8 @@ class RefreshTokenStore {
                                         rs.getObject("family_id", UUID.class),
                                         rs.getTimestamp("expires_at").toInstant(),
                                         rs.getTimestamp("absolute_expires_at").toInstant(),
-                                        rs.getBoolean("revoked")))
+                                        rs.getBoolean("revoked"),
+                                        rs.getString("device_label")))
                 .optional();
     }
 
@@ -145,5 +149,6 @@ class RefreshTokenStore {
             UUID familyId,
             Instant expiresAt,
             Instant absoluteExpiresAt,
-            boolean revoked) {}
+            boolean revoked,
+            String deviceLabel) {}
 }

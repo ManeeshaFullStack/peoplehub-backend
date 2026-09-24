@@ -80,9 +80,11 @@ public class RefreshTokenService {
 
     /**
      * Opens a new session (family) for a just-authenticated employee, in the caller's transaction.
+     * {@code deviceLabel} is the coarse label from {@link DeviceLabels} (B2-6/3), never a raw
+     * header; every rotated token of the family keeps it.
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    SessionTokens start(UUID organizationId, UUID employeeId, String role) {
+    SessionTokens start(UUID organizationId, UUID employeeId, String role, String deviceLabel) {
         Instant now = clock.instant();
         Instant absoluteExpiresAt = now.plus(absoluteTtl);
         UUID family = UUID.randomUUID();
@@ -94,7 +96,8 @@ public class RefreshTokenService {
                 secureTokens.hash(raw),
                 family,
                 expiresAt,
-                absoluteExpiresAt);
+                absoluteExpiresAt,
+                deviceLabel);
         return new SessionTokens(
                 family,
                 accessTokenIssuer.issue(employeeId, organizationId, role, family),
@@ -139,7 +142,8 @@ public class RefreshTokenService {
                         secureTokens.hash(raw),
                         token.familyId(),
                         expiresAt,
-                        token.absoluteExpiresAt());
+                        token.absoluteExpiresAt(),
+                        token.deviceLabel());
         store.revokeRotated(token.id(), successor, now);
 
         ActorId.set(token.employeeId().toString());
