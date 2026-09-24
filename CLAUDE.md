@@ -30,11 +30,11 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 - **Multi-organization HR operations SaaS backend** (v9, D21): one deployment can host many organizations, and each one
   behaves as a completely private workspace (hard tenant isolation; see "v9 adoption" below). Scope: attendance
   (server-authoritative sessions), leave, approvals, org/departments, calendar, notifications, reports, audit.
-  Standalone (own auth/org/data). **Built so far in B2 (b2-1 to b2-4):** the organization/tenant/employee schema,
+  Standalone (own auth/org/data). **Built so far in B2 (b2-1 to b2-5):** the organization/tenant/employee schema,
   organization registration with founder email verification, password login with JWT, rotating refresh tokens and the
-  tenant context, and invitation-only membership (Employee and direct Admin invitations, activation, the welcome
-  state). **Not built yet:** lockout/reset, sessions/deactivation, MFA and database-level tenant isolation (RLS) arrive
-  in b2-5 to b2-8.
+  tenant context, invitation-only membership (Employee and direct Admin invitations, activation, the welcome state),
+  and the password policy with a breached-password check, per-account lockout, forgot/reset and change password.
+  **Not built yet:** sessions/deactivation, MFA and database-level tenant isolation (RLS) arrive in b2-6 to b2-8.
 - **Stack:** Java 21, Spring Boot (modular monolith, **package-by-feature**), PostgreSQL (`timestamptz` everywhere,
   `btree_gist`), Flyway (forward-only), Redis (refresh-token families, rate limiting, presence, Spring Cache),
   Jakarta Validation, Logback JSON + MDC, `@Scheduled` + ShedLock, provider-agnostic `EmailService` + transactional
@@ -62,10 +62,11 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   foundation, templates/retry/sending, in-app notifications + SSE, bounce/complaint suppression;
   PRs #11, #12, #13, #15). **B1 (Email & notification platform) complete.** See §13 for the
   branch-by-branch detail.
-- **B2 status:** b2-1, b2-2, b2-3 and b2-4 are merged (organization/tenant/employee schema V8-V12, PR #17;
+- **B2 status:** b2-1, b2-2, b2-3, b2-4 and b2-5 are merged (organization/tenant/employee schema V8-V12, PR #17;
   organization registration and founder verification V13, PR #20; password login, JWT and refresh-token rotation V14,
-  PR #23; invitations, activation and the welcome state V15, PR #26). **Next: `b2-5-password-policy-lockout-reset`.**
-  B2 is not complete (b2-5 to b2-8 remain). See §13 for the branch-by-branch detail.
+  PR #23; invitations, activation and the welcome state V15, PR #26; password policy, lockout and reset V16-V17,
+  PR #29). **Next: `b2-6-sessions-deactivation-revoke`.** B2 is not complete (b2-6 to b2-8 remain). See §13 for the
+  branch-by-branch detail.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15 item 12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
@@ -440,7 +441,7 @@ and revoking pending invitations on deactivation (`b2-6`), RLS (`b2-8`), the per
 Cite as "B2-5/P4" and so on (never a bare `D#`, which is the spec's). Scope:
 `feature/b2-5-password-policy-lockout-reset` — the password policy including a breached-password check, failed-login
 counting and lockout with backoff, forgot/reset password, change password, and the audit rows and enumeration tests
-that go with them. Not yet implemented; this locks the design before coding. Spec basis: §8.2, §13.0, §15 (items 3, 10),
+that go with them. **Implemented and merged (PR #29).** Spec basis: §8.2, §13.0, §15 (items 3, 10),
 §15.1, §17 (B2 row).
 
 - **B2-5/P1 — Breached-password check: an offline list.** A licensed common/breached-password list is bundled with the
@@ -1054,7 +1055,15 @@ policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-sch
   (`feature/b2-4-invite-activation-admin-invite`: V15 `employee_invitation` hardening, Employee and direct Admin
   invitations through the outbox, public preview and acceptance with the invitee's own password, resend and revoke,
   invitation audit events, `firstName`/`welcomeSeenAt` on `/me` and `POST /me/welcome/ack`; PR #26; decisions
-  B2-4/O1-B2-4/O15). **Next: b2-5** (password policy, lockout and reset). Still owed inside B2: b2-6
+  B2-4/O1-B2-4/O15). **b2-5 is merged** (`feature/b2-5-password-policy-lockout-reset`: V16 `employee` lockout
+  columns (`failed_login_count`, `locked_until`) and the `PASSWORD_RESET`/`PASSWORD_CHANGED` refresh-token revoke
+  reasons, V17 `password_reset_token`; the password policy (12-128 characters, no composition rules) with an offline
+  breached-password list; per-account lockout with backoff (5 failures, 1 minute doubling to 30); forgot/reset password
+  (`POST /auth/forgot-password`, `POST /auth/reset-password`: non-enumerating, single-use hashed code, throttled, ends
+  every session and clears the lockout, Origin-checked); change password (`POST /me/password`: current password
+  required, other sessions ended); audit events `ACCOUNT_LOCKED`, `PASSWORD_RESET_REQUESTED`,
+  `PASSWORD_RESET_COMPLETED` and `PASSWORD_CHANGED`; PR #29; decisions B2-5/P1-B2-5/P13). **Next: b2-6**
+  (sessions, deactivation and revocation). Still owed inside B2: b2-6
   sessions/deactivation (including revoking pending invitations on deactivation), b2-7 MFA and Employee → Admin
   promotion (policy per MFA/1-MFA/7; the spec's mandatory-MFA text must be corrected first, §15 item 15), b2-8 RLS and
   the cross-tenant security suite (B2-3/20). Update this line when a phase merges.
