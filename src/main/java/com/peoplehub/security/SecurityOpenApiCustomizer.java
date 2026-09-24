@@ -24,6 +24,7 @@ import org.springframework.stereotype.Component;
  *       answer 401 (and 403).
  *   <li>Login, refresh, logout, forgot password and reset password document their own 401/403
  *       answers.
+ *   <li>The sessions and deactivation endpoints (b2-6) also document their 400/403/404/409 answers.
  * </ul>
  *
  * Driven by the same list as the security chain, so the document cannot say an endpoint is public
@@ -54,6 +55,28 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                     "/api/v1/auth/reset-password",
                     Map.of("403", "The request came from a foreign origin."));
 
+    /**
+     * The other problem answers of authenticated operations whose failures are part of their
+     * contract (b2-6): every operation under the path gets them, next to the 401/403 above.
+     */
+    private static final Map<String, Map<String, String>> PROBLEM_RESPONSES =
+            Map.of(
+                    "/api/v1/me/sessions",
+                    Map.of("400", "The page, size or sort is invalid."),
+                    "/api/v1/me/sessions/{sessionId}",
+                    Map.of("404", "Not one of the caller's active sessions."),
+                    "/api/v1/admin/employees/{id}/deactivate",
+                    Map.of(
+                            "400", "The exit date is malformed or later than today.",
+                            "403", "The caller may not deactivate this employee.",
+                            "404", "No such employee in the caller's organization.",
+                            "409", "The employee cannot be deactivated in their current state."),
+                    "/api/v1/admin/employees/{id}/reactivate",
+                    Map.of(
+                            "403", "The caller may not reactivate this employee.",
+                            "404", "No such employee in the caller's organization.",
+                            "409", "Only a deactivated employee can be reactivated."));
+
     @Override
     public void customise(OpenAPI openApi) {
         if (openApi.getComponents() == null) {
@@ -77,7 +100,13 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
 
     private static void document(String path, PathItem item) {
         if (!PublicEndpoints.isPublicPath(path)) {
-            item.readOperations().forEach(SecurityOpenApiCustomizer::requireToken);
+            Map<String, String> problems = PROBLEM_RESPONSES.getOrDefault(path, Map.of());
+            for (Operation operation : item.readOperations()) {
+                requireToken(operation);
+                problems.forEach(
+                        (status, description) ->
+                                responses(operation).put(status, problem(description)));
+            }
             return;
         }
         Map<String, String> documented = AUTH_ENDPOINT_RESPONSES.getOrDefault(path, Map.of());
