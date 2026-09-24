@@ -204,7 +204,8 @@ src/main/java/com/peoplehub/            # package-by-feature; root package com.p
   security/                             # filter chain, public endpoints, 401/403, CORS, password hashing
     jwt/                                # ES256 keys, access-token issuing and verification
     principal/                          # AuthenticatedPrincipal: who is calling, and their tenant
-  auth/                                 # login, refresh, logout, lockout, change password (see "Authentication")
+  auth/                                 # login, refresh, logout, lockout, change password, sessions (see "Authentication")
+  employee/                             # deactivation and reactivation (see "Deactivation")
   profile/                              # GET /me, welcome acknowledgement, POST /me/password
   passwordreset/                        # forgot and reset password (see "Passwords")
   invitation/                           # invitations: invite, resend, revoke, preview, accept (see "Invitations")
@@ -269,10 +270,11 @@ class EmployeeController {
 
 ## Authentication
 
-Password login, JWT access tokens and rotating refresh tokens (b2-3), and the password policy, lockout, reset and
-change (b2-5; the decisions are "B2-3 decisions" and "B2-5 decisions" in [`CLAUDE.md`](CLAUDE.md)). Not built yet: MFA
-(b2-7), sessions list, logout-all and deactivation (b2-6), roles and permissions (b3-1), PostgreSQL row-level security
-(b2-8), per-IP lockout (with the hosting decision) and request rate limiting (b13-1).
+Password login, JWT access tokens and rotating refresh tokens (b2-3), the password policy, lockout, reset and change
+(b2-5), and the sessions list, session revocation and employee deactivation (b2-6; the decisions are "B2-3 decisions",
+"B2-5 decisions" and "B2-6 decisions" in [`CLAUDE.md`](CLAUDE.md)). Not built yet: MFA (b2-7), roles and permissions
+(b3-1), PostgreSQL row-level security (b2-8), per-IP lockout (with the hosting decision) and request rate limiting
+(b13-1).
 
 | Endpoint | What it does |
 |---|---|
@@ -284,6 +286,9 @@ change (b2-5; the decisions are "B2-3 decisions" and "B2-5 decisions" in [`CLAUD
 | `GET /api/v1/me` | The caller's own profile, including `firstName` (derived from `name` on the server) and `welcomeSeenAt`. |
 | `POST /api/v1/me/welcome/ack` | Records that the one-time welcome screen was seen (`welcomeSeenAt`); later calls change nothing. 204. |
 | `POST /api/v1/me/password` | Body `{currentPassword, newPassword, confirmPassword}`: changes the caller's password; this session stays signed in, every other one ends. 204. |
+| `GET /api/v1/me/sessions` | The caller's own active sessions, paginated (see "Sessions"). |
+| `DELETE /api/v1/me/sessions/{sessionId}` | Ends one of the caller's sessions; ending the current one signs this device out. 204, or 404 for any id that is not one of the caller's active sessions. |
+| `POST /api/v1/me/sessions/revoke-others` | Ends every session of the caller except this one. 204. |
 
 How a client uses it:
 
@@ -328,6 +333,52 @@ non-public endpoint that answers without a token.
 - **Audit:** `PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET_COMPLETED`, `PASSWORD_CHANGED` and `ACCOUNT_LOCKED`, with ids
   and counts only. Failed sign-ins stay in `login_attempt`. No "your password was changed" notification is sent yet.
 
+### Sessions
+
+- **A session is one sign-in**: a refresh-token family (`sid` in the access token). It stays active while it is refreshed
+  within its sliding window and until its absolute limit (30 and 90 days).
+- **`GET /me/sessions`** lists only the caller's active sessions, in the standard page envelope. Each item has
+  `sessionId`, `current` (the session making the request), `deviceLabel`, `createdAt` (sign-in), `lastUsedAt` (last
+  refresh), `expiresAt` and `absoluteExpiresAt`. Default sort `lastUsedAt,desc`; `createdAt` and `lastUsedAt` are the only
+  sort fields. No token, token hash or IP address is ever returned.
+- **The device label** is a coarse "browser on operating system" (for example "Chrome on Windows"), derived at sign-in
+  from the `User-Agent` by built-in rules and at most 64 characters, "Unknown device" when nothing is recognised. The
+  raw `User-Agent` and the IP are never stored.
+- **Ending sessions** (`DELETE /me/sessions/{sessionId}`, `POST /me/sessions/revoke-others`) revokes their tokens with
+  reason `SESSION_REVOKED`; access tokens of an ended session stop working at their next request. Ending the current
+  session also clears its cookies, like logout. Audited as `SESSION_REVOKED` (with the `sessionId`) and
+  `OTHER_SESSIONS_REVOKED` (with the number ended).
+- **Reuse detection** (a copied refresh token) is raised only for a token replaced by a refresh or presented after
+  logout. A token whose session was ended on purpose (a revoked session, a password reset or change, deactivation) is
+  refused with the same 401 but raises no `REFRESH_TOKEN_REUSE_DETECTED` alarm.
+
+### Deactivation
+
+| Endpoint | Who | What it does |
+|---|---|---|
+| `POST /api/v1/admin/employees/{id}/deactivate` | Admin (Employees only), Super Admin (anyone but themselves) | Optional body `{exitDate}`. 204. |
+| `POST /api/v1/admin/employees/{id}/reactivate` | Same | 204. |
+
+- **Checks, in this order:** the employee is looked up inside the caller's own organization (unknown, or another
+  organization's, is the same 404); then who may act on whom (403; nobody acts on themselves, so the last active Super
+  Admin can never be deactivated); then the state (409); then the body (400). A caller who is not an Admin or Super
+  Admin gets 403 before any lookup.
+- **Deactivation** accepts `ACTIVE` and `INVITED` employees (anything else is a 409). In one transaction it sets
+  `DEACTIVATED`, stores `exitDate` only when given (it may not be later than today in the organization's timezone; the
+  server never fills it in), ends every session (reason `DEACTIVATED`), revokes an invitee's open invitation,
+  invalidates unused password-reset codes and audits `EMPLOYEE_DEACTIVATED`. From then on the person cannot sign in,
+  refresh, use an existing access token or get a reset email. Nothing is deleted: the password, lockout counters,
+  invitations they sent and all history stay.
+- **Reactivation** accepts only `DEACTIVATED` employees. It restores `ACTIVE`, or `INVITED` if they never set a password
+  (an Admin can then invite them again), clears the exit date and audits `EMPLOYEE_REACTIVATED`. No session comes back:
+  the person signs in again.
+- **A login or refresh running at the same moment as a deactivation** never leaves a usable session: both re-check the
+  employee under a row lock just before creating or rotating a token, so either they finish first and the deactivation
+  revokes their token, or they wait for it and fail.
+- **Not built yet:** closing an open attendance session (B4), revoking desktop-agent devices (B5), reassigning pending
+  approvals (B7), ending an open notification stream (no production stream exists yet), "deactivated/reactivated"
+  notifications, the employee directory and employee editing (`b3-3`), and deleting (tombstoning) an Admin (`b3-4`).
+
 ### Signing keys
 
 The application refuses to start without a valid key. Generate one per environment and never commit it:
@@ -344,8 +395,9 @@ key themselves; `docker/smoke.sh` does too.
 ## Invitations
 
 Employees and Admins never sign up; they are invited (b2-4; the decisions are "B2-4 decisions" in
-[`CLAUDE.md`](CLAUDE.md)). Not built yet: MFA for invited Admins and promotion of an existing Employee (b2-7),
-deactivation (b2-6), an invitation list (b3-3), bulk import (b3-5), notifications and rate limiting.
+[`CLAUDE.md`](CLAUDE.md)). Deactivating an invited person revokes their open invitation (see "Deactivation"). Not built
+yet: MFA for invited Admins and promotion of an existing Employee (b2-7), an invitation list (b3-3), bulk import (b3-5),
+notifications and rate limiting.
 
 | Endpoint | Who | What it does |
 |---|---|---|

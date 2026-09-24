@@ -22,6 +22,7 @@ import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -296,6 +297,16 @@ public class InvitationService {
                                         .attribute("role", role)
                                         .build())
                         .build());
+    }
+
+    /**
+     * Revokes the open invitation of an invited person being deactivated (b2-6, B2-6/11), in the
+     * caller's transaction. Returns whether one was revoked. Invitations the person sent are not
+     * touched.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public boolean revokeOpenInvitationOf(UUID organizationId, String emailNormalized) {
+        return store.revokeOpenFor(organizationId, emailNormalized, clock.instant()) > 0;
     }
 
     record IssuedInvitation(UUID invitationId, Instant expiresAt) {}

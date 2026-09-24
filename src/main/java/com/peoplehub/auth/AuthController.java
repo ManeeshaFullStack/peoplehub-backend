@@ -8,6 +8,7 @@ import jakarta.validation.Valid;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Optional;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -57,7 +58,10 @@ public class AuthController {
         guard.requireAllowedOrigin(request);
         SessionTokens tokens =
                 loginService
-                        .login(body, clientAddress(request))
+                        .login(
+                                body,
+                                clientAddress(request),
+                                DeviceLabels.from(request.getHeader(HttpHeaders.USER_AGENT)))
                         .orElseThrow(
                                 () ->
                                         new ApiProblemException(

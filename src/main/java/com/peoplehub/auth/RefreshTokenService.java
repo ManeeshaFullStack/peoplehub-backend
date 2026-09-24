@@ -10,12 +10,12 @@ import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.common.logging.OrganizationId;
 import com.peoplehub.security.SecureTokens;
 import com.peoplehub.security.jwt.AccessTokenIssuer;
-import com.peoplehub.security.principal.PrincipalStatusQuery;
 import java.net.InetAddress;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -30,9 +30,14 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>{@link #refresh}: every use rotates the token: the presented row is locked, revoked as
  *       {@code ROTATED} and replaced by a new row in the same family, whose sliding expiry is the
  *       earlier of now + the sliding window and the family's absolute limit.
- *   <li>Presenting an already-revoked token is reuse: the whole family is revoked ({@code
- *       REUSE_DETECTED}) and the event is audited. There is no grace window, so two parallel
- *       refreshes of the same token end the session; the client must refresh one call at a time.
+ *   <li>Presenting a token that a refresh already replaced ({@code ROTATED}), or one presented
+ *       after logout ({@code LOGOUT}: the browser that logged out no longer has it), is reuse: the
+ *       whole family is revoked ({@code REUSE_DETECTED}) and the event is audited. There is no
+ *       grace window, so two parallel refreshes of the same token end the session; the client must
+ *       refresh one call at a time.
+ *   <li>A token whose session was ended by a lifecycle action (a revoked session, a password reset
+ *       or change, deactivation) is simply refused, as is one revoked by an earlier reuse
+ *       detection: another device may still legitimately hold it, so it is not audited as reuse.
  *   <li>{@link #logout}: revokes the family ({@code LOGOUT}).
  * </ul>
  *
@@ -43,10 +48,14 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class RefreshTokenService {
 
+    /** Revoke reasons under which presenting the token again is treated as theft (B2-3/8). */
+    private static final Set<String> REUSE_REASONS =
+            Set.of(RevokeReason.ROTATED.name(), RevokeReason.LOGOUT.name());
+
     private final RefreshTokenStore store;
     private final SecureTokens secureTokens;
     private final AccessTokenIssuer accessTokenIssuer;
-    private final PrincipalStatusQuery statusQuery;
+    private final ActiveEmployeeLock activeEmployeeLock;
     private final AuditWriter auditWriter;
     private final Clock clock;
     private final Duration slidingTtl;
@@ -56,7 +65,7 @@ public class RefreshTokenService {
             RefreshTokenStore store,
             SecureTokens secureTokens,
             AccessTokenIssuer accessTokenIssuer,
-            PrincipalStatusQuery statusQuery,
+            ActiveEmployeeLock activeEmployeeLock,
             AuditWriter auditWriter,
             Clock clock,
             @Value("${peoplehub.auth.refresh-token.sliding-ttl}") Duration slidingTtl,
@@ -71,7 +80,7 @@ public class RefreshTokenService {
         this.store = store;
         this.secureTokens = secureTokens;
         this.accessTokenIssuer = accessTokenIssuer;
-        this.statusQuery = statusQuery;
+        this.activeEmployeeLock = activeEmployeeLock;
         this.auditWriter = auditWriter;
         this.clock = clock;
         this.slidingTtl = slidingTtl;
@@ -80,9 +89,11 @@ public class RefreshTokenService {
 
     /**
      * Opens a new session (family) for a just-authenticated employee, in the caller's transaction.
+     * {@code deviceLabel} is the coarse label from {@link DeviceLabels} (B2-6/3), never a raw
+     * header; every rotated token of the family keeps it.
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    SessionTokens start(UUID organizationId, UUID employeeId, String role) {
+    SessionTokens start(UUID organizationId, UUID employeeId, String role, String deviceLabel) {
         Instant now = clock.instant();
         Instant absoluteExpiresAt = now.plus(absoluteTtl);
         UUID family = UUID.randomUUID();
@@ -94,7 +105,8 @@ public class RefreshTokenService {
                 secureTokens.hash(raw),
                 family,
                 expiresAt,
-                absoluteExpiresAt);
+                absoluteExpiresAt,
+                deviceLabel);
         return new SessionTokens(
                 family,
                 accessTokenIssuer.issue(employeeId, organizationId, role, family),
@@ -106,7 +118,17 @@ public class RefreshTokenService {
     /** Rotates a refresh token; empty means "sign in again", whatever the reason (B2-3/12). */
     @Transactional
     public Optional<SessionTokens> refresh(String rawToken, InetAddress ip) {
-        Optional<StoredRefreshToken> found = store.findForUpdate(secureTokens.hash(rawToken));
+        String tokenHash = secureTokens.hash(rawToken);
+        Optional<RefreshTokenStore.Owner> owner = store.owner(tokenHash);
+        if (owner.isEmpty()) {
+            return Optional.empty();
+        }
+        // The employee row first (shared lock, while active), then the token row: a concurrent
+        // deactivation either finishes before this refresh or revokes its new token (B2-6/12).
+        Optional<String> role =
+                activeEmployeeLock.forRefresh(
+                        owner.get().employeeId(), owner.get().organizationId());
+        Optional<StoredRefreshToken> found = store.findForUpdate(tokenHash);
         if (found.isEmpty()) {
             return Optional.empty();
         }
@@ -114,18 +136,21 @@ public class RefreshTokenService {
         Instant now = clock.instant();
 
         if (token.revoked()) {
-            // A token that was already rotated or revoked has been presented again: it was
-            // copied. End the whole session, including whoever holds its newest token.
-            store.revokeFamily(token.familyId(), RevokeReason.REUSE_DETECTED, now);
-            audit(token, "REFRESH_TOKEN_REUSE_DETECTED", ip);
+            if (REUSE_REASONS.contains(token.revokeReason())) {
+                // A token a refresh already replaced, or one whose browser logged out and dropped
+                // it, has been presented again: it was copied. End the whole session, including
+                // whoever holds its newest token.
+                store.revokeFamily(token.familyId(), RevokeReason.REUSE_DETECTED, now);
+                audit(token, "REFRESH_TOKEN_REUSE_DETECTED", ip);
+            }
+            // Any other revoked token belongs to a session that was ended on purpose.
             return Optional.empty();
         }
         if (!token.expiresAt().isAfter(now)) {
             return Optional.empty();
         }
-        Optional<String> role =
-                statusQuery.activeRole(
-                        token.employeeId(), token.organizationId(), token.familyId());
+        // The employee and organization must still be ACTIVE; the session itself is live, since
+        // the presented token is unrevoked, unexpired and locked.
         if (role.isEmpty()) {
             return Optional.empty();
         }
@@ -139,7 +164,8 @@ public class RefreshTokenService {
                         secureTokens.hash(raw),
                         token.familyId(),
                         expiresAt,
-                        token.absoluteExpiresAt());
+                        token.absoluteExpiresAt(),
+                        token.deviceLabel());
         store.revokeRotated(token.id(), successor, now);
 
         ActorId.set(token.employeeId().toString());
@@ -184,6 +210,18 @@ public class RefreshTokenService {
     public int endAllSessionsAfterPasswordReset(UUID organizationId, UUID employeeId) {
         return store.revokeEmployee(
                 employeeId, organizationId, RevokeReason.PASSWORD_RESET, clock.instant());
+    }
+
+    /**
+     * Ends every session of an employee being deactivated, or, as a safety net, one being
+     * reactivated (b2-6, B2-6/11, B2-6/13; D26): all their refresh tokens are revoked ({@code
+     * DEACTIVATED}), and with them, through the per-request session check (B2-3/14), their access
+     * tokens. Returns how many tokens were revoked. The caller audits the change itself.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int endAllSessionsOnDeactivation(UUID organizationId, UUID employeeId) {
+        return store.revokeEmployee(
+                employeeId, organizationId, RevokeReason.DEACTIVATED, clock.instant());
     }
 
     /**

@@ -311,6 +311,73 @@ flow_warnings="$(compose logs --no-color backend 2>&1 | grep -cE '"level":"(WARN
 expect_equals "the backend logged no warnings or errors during the password flow" 0 "$flow_warnings"
 
 # ---------------------------------------------------------------------------------------------------------------------
+# Same organization and employee as above (password now $second_password), still as the runtime role: listing and
+# ending sessions, then deactivation and reactivation by a Super Admin, including the row locks login and refresh take.
+section "Sessions and deactivation as the runtime role (b2-6)"
+login_as() {
+    local out
+    out="$(api -d "$(printf '{"organization":"%s","email":"%s","password":"%s"}' "$smoke_key" "$1" "$2")" \
+        "http://127.0.0.1:$BACKEND_PORT/api/v1/auth/login")"
+    if [[ "$out" =~ \"accessToken\":\"([^\"]+)\" ]]; then echo "${BASH_REMATCH[1]}"; fi
+}
+usable_tokens() { psql_admin "select count(*) from refresh_token where employee_id = '$smoke_employee' and not revoked"; }
+employee_status() { psql_admin "select status from employee where id = '$smoke_employee'"; }
+
+employee_token="$(login_as "$smoke_email" "$second_password")"
+sessions="$(api -H "Authorization: Bearer $employee_token" "http://127.0.0.1:$BACKEND_PORT/api/v1/me/sessions")"
+expect_contains "the sessions list answers in the page envelope" '"totalElements":' "$sessions"
+expect_contains "the sessions list marks the current session" '"current":true' "$sessions"
+if [[ "$sessions" == *"127.0.0.1"* || "$sessions" == *"$employee_token"* ]]; then
+    fail "the sessions list shows no address or token"
+else
+    pass "the sessions list shows no address or token"
+fi
+other_session="$(psql_admin "select family_id from refresh_token where employee_id = '$smoke_employee'
+    and not revoked order by created_at limit 1")"
+ended="$(api_status -X DELETE -H "Authorization: Bearer $employee_token" \
+    "http://127.0.0.1:$BACKEND_PORT/api/v1/me/sessions/$other_session")"
+expect_equals "ending another session answers 204" 204 "$ended"
+expect_equals "that session was revoked as SESSION_REVOKED" SESSION_REVOKED \
+    "$(psql_admin "select string_agg(distinct revoke_reason, ',') from refresh_token where family_id = '$other_session'")"
+others="$(api_status -X POST -H "Authorization: Bearer $employee_token" \
+    "http://127.0.0.1:$BACKEND_PORT/api/v1/me/sessions/revoke-others")"
+expect_equals "revoke-others answers 204" 204 "$others"
+expect_equals "only the current session is left" 1 "$(usable_tokens)"
+
+smoke_admin_email="smoke.admin@example.com"
+psql_admin "insert into employee (organization_id, employee_code, name, email, email_normalized, status, role,
+    password_hash) select '$smoke_org', 'SMOKE-2', 'Smoke Admin', '$smoke_admin_email', '$smoke_admin_email', 'ACTIVE',
+    'SUPER_ADMIN', password_hash from employee where id = '$smoke_employee'" >/dev/null
+admin_token="$(login_as "$smoke_admin_email" "$second_password")"
+if [ -n "$admin_token" ]; then pass "a Super Admin signs in"; else fail "a Super Admin signs in"; fi
+deactivated="$(api_status -X POST -H "Authorization: Bearer $admin_token" \
+    "http://127.0.0.1:$BACKEND_PORT/api/v1/admin/employees/$smoke_employee/deactivate")"
+expect_equals "deactivation answers 204" 204 "$deactivated"
+expect_equals "the employee is DEACTIVATED" DEACTIVATED "$(employee_status)"
+expect_equals "no usable session is left" 0 "$(usable_tokens)"
+expect_equals "the old access token is refused" 401 \
+    "$(api_status -H "Authorization: Bearer $employee_token" "http://127.0.0.1:$BACKEND_PORT/api/v1/me")"
+expect_equals "a deactivated employee cannot sign in" "" "$(login_as "$smoke_email" "$second_password")"
+reactivated="$(api_status -X POST -H "Authorization: Bearer $admin_token" \
+    "http://127.0.0.1:$BACKEND_PORT/api/v1/admin/employees/$smoke_employee/reactivate")"
+expect_equals "reactivation answers 204" 204 "$reactivated"
+expect_equals "the employee is ACTIVE again" ACTIVE "$(employee_status)"
+expect_equals "the old access token is still refused" 401 \
+    "$(api_status -H "Authorization: Bearer $employee_token" "http://127.0.0.1:$BACKEND_PORT/api/v1/me")"
+if [ -n "$(login_as "$smoke_email" "$second_password")" ]; then
+    pass "after reactivation the employee signs in again"
+else
+    fail "after reactivation the employee signs in again"
+fi
+lifecycle="$(psql_admin "select string_agg(distinct action, ',' order by action) from audit_log
+    where organization_id = '$smoke_org' and action in ('SESSION_REVOKED', 'OTHER_SESSIONS_REVOKED',
+    'EMPLOYEE_DEACTIVATED', 'EMPLOYEE_REACTIVATED')")"
+expect_equals "sessions and deactivation were audited" \
+    "EMPLOYEE_DEACTIVATED,EMPLOYEE_REACTIVATED,OTHER_SESSIONS_REVOKED,SESSION_REVOKED" "$lifecycle"
+lifecycle_warnings="$(compose logs --no-color backend 2>&1 | grep -cE '"level":"(WARN|ERROR)"' || true)"
+expect_equals "the backend logged no warnings or errors during sessions and deactivation" 0 "$lifecycle_warnings"
+
+# ---------------------------------------------------------------------------------------------------------------------
 section "Redis"
 expect_contains "Redis refuses unauthenticated commands" "NOAUTH" "$(compose exec -T redis redis-cli ping 2>&1 || true)"
 # Single quotes on purpose: $REDIS_PASSWORD must be expanded by the shell INSIDE the container, so the password never

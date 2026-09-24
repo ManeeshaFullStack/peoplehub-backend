@@ -95,11 +95,57 @@ class SecurityOpenApiTest {
     }
 
     @Test
+    void theSessionAndDeactivationEndpointsNeedTheTokenAndDocumentTheirProblems() throws Exception {
+        String sessions = "$.paths['/api/v1/me/sessions']";
+        String session = "$.paths['/api/v1/me/sessions/{sessionId}']";
+        String others = "$.paths['/api/v1/me/sessions/revoke-others']";
+        String deactivate = "$.paths['/api/v1/admin/employees/{id}/deactivate']";
+        String reactivate = "$.paths['/api/v1/admin/employees/{id}/reactivate']";
+        var docs = mvc.perform(get("/v3/api-docs")).andExpect(status().isOk());
+
+        for (String operation :
+                new String[] {
+                    sessions + ".get",
+                    session + ".delete",
+                    others + ".post",
+                    deactivate + ".post",
+                    reactivate + ".post"
+                }) {
+            docs.andExpect(jsonPath(operation + ".security[0]", hasKey("bearerAuth")))
+                    .andExpect(
+                            jsonPath(
+                                            operation
+                                                    + ".responses['401'].content['application/problem+json'].schema['$ref']")
+                                    .value(PROBLEM_REF));
+        }
+        docs.andExpect(jsonPath(sessions + ".get.responses['400']").exists())
+                .andExpect(jsonPath(sessions + ".get.responses['200']").exists())
+                .andExpect(jsonPath(session + ".delete.responses['404']").exists())
+                .andExpect(jsonPath(session + ".delete.responses['204']").exists())
+                .andExpect(jsonPath(others + ".post.responses['204']").exists())
+                .andExpect(jsonPath(deactivate + ".post.responses['204']").exists())
+                .andExpect(jsonPath(deactivate + ".post.responses", hasKey("400")))
+                .andExpect(jsonPath(deactivate + ".post.responses", hasKey("403")))
+                .andExpect(jsonPath(deactivate + ".post.responses", hasKey("404")))
+                .andExpect(jsonPath(deactivate + ".post.responses", hasKey("409")))
+                .andExpect(jsonPath(reactivate + ".post.responses", hasKey("404")))
+                .andExpect(jsonPath(reactivate + ".post.responses", hasKey("409")))
+                .andExpect(
+                        jsonPath(
+                                        deactivate
+                                                + ".post.responses['409'].content['application/problem+json'].schema['$ref']")
+                                .value(PROBLEM_REF));
+    }
+
+    @Test
     void thePathCheckAgreesWithTheSecurityChain() {
         assertThat(PublicEndpoints.isPublicPath("/api/v1/auth/login")).isTrue();
         assertThat(PublicEndpoints.isPublicPath("/api/v1/public/organizations/register")).isTrue();
         assertThat(PublicEndpoints.isPublicPath("/actuator/health/liveness")).isTrue();
         assertThat(PublicEndpoints.isPublicPath("/api/v1/me")).isFalse();
+        assertThat(PublicEndpoints.isPublicPath("/api/v1/me/sessions")).isFalse();
+        assertThat(PublicEndpoints.isPublicPath("/api/v1/me/sessions/revoke-others")).isFalse();
+        assertThat(PublicEndpoints.isPublicPath("/api/v1/admin/employees/x/deactivate")).isFalse();
         assertThat(PublicEndpoints.isPublicPath("/api/v1/auth/login/extra")).isFalse();
         assertThat(PublicEndpoints.isPublicPath("/actuator/metrics")).isFalse();
     }

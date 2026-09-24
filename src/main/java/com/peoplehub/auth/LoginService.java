@@ -65,6 +65,7 @@ public class LoginService {
     private final RefreshTokenService refreshTokenService;
     private final AuditWriter auditWriter;
     private final FailedSignIns failedSignIns;
+    private final ActiveEmployeeLock activeEmployeeLock;
 
     /** Verified against when there is no account, so a miss costs the same as a wrong password. */
     private final String dummyHash;
@@ -75,18 +76,23 @@ public class LoginService {
             SecureTokens secureTokens,
             RefreshTokenService refreshTokenService,
             AuditWriter auditWriter,
-            FailedSignIns failedSignIns) {
+            FailedSignIns failedSignIns,
+            ActiveEmployeeLock activeEmployeeLock) {
         this.jdbc = jdbc;
         this.passwordHasher = passwordHasher;
         this.refreshTokenService = refreshTokenService;
         this.auditWriter = auditWriter;
         this.failedSignIns = failedSignIns;
+        this.activeEmployeeLock = activeEmployeeLock;
         this.dummyHash = passwordHasher.hash(secureTokens.generateRaw());
     }
 
-    /** Logs in; empty means "we couldn't sign you in with those details", whatever the reason. */
+    /**
+     * Logs in; empty means "we couldn't sign you in with those details", whatever the reason. A new
+     * session is labelled with {@code deviceLabel}, from {@link DeviceLabels} (B2-6/3).
+     */
     @Transactional
-    public Optional<SessionTokens> login(LoginRequest request, InetAddress ip) {
+    public Optional<SessionTokens> login(LoginRequest request, InetAddress ip, String deviceLabel) {
         Optional<Account> account =
                 loginKey(request.organization())
                         .flatMap(key -> findAccount(key, normalizeEmail(request.email())));
@@ -102,6 +108,15 @@ public class LoginService {
                         && passwordMatches
                         && hash != null
                         && account.map(Account::isActive).orElse(false);
+        if (success) {
+            // Re-checked under a lock on the employee row just before the session is created: a
+            // deactivation committed meanwhile makes this an ordinary failed login, and one still
+            // running waits for this login and then ends its session too (B2-6/12).
+            success =
+                    activeEmployeeLock
+                            .forLogin(account.get().employeeId(), account.get().organizationId())
+                            .isPresent();
+        }
 
         recordAttempt(request, ip, success);
         if (!success) {
@@ -118,7 +133,8 @@ public class LoginService {
         ActorId.set(found.employeeId().toString());
         OrganizationId.set(found.organizationId());
         SessionTokens tokens =
-                refreshTokenService.start(found.organizationId(), found.employeeId(), found.role());
+                refreshTokenService.start(
+                        found.organizationId(), found.employeeId(), found.role(), deviceLabel);
         auditWriter.append(
                 AuditEvent.builder(found.organizationId(), "LOGIN_SUCCEEDED")
                         .target(AuditTarget.of("EMPLOYEE", found.employeeId().toString()))

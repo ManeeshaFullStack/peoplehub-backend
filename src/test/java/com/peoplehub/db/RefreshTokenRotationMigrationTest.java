@@ -205,10 +205,17 @@ class RefreshTokenRotationMigrationTest {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
 
-        // V14's three reasons, plus PASSWORD_RESET and PASSWORD_CHANGED since V16 (b2-5).
+        // V14's three reasons, plus PASSWORD_RESET and PASSWORD_CHANGED since V16 (b2-5), and
+        // SESSION_REVOKED and DEACTIVATED since V18 (b2-6).
         for (String reason :
                 new String[] {
-                    "ROTATED", "LOGOUT", "REUSE_DETECTED", "PASSWORD_RESET", "PASSWORD_CHANGED"
+                    "ROTATED",
+                    "LOGOUT",
+                    "REUSE_DETECTED",
+                    "PASSWORD_RESET",
+                    "PASSWORD_CHANGED",
+                    "SESSION_REVOKED",
+                    "DEACTIVATED"
                 }) {
             UUID id = insertToken(org, employee);
             jdbc.update(
