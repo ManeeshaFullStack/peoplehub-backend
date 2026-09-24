@@ -15,11 +15,16 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import net.javacrumbs.shedlock.core.LockConfiguration;
+import net.javacrumbs.shedlock.core.LockProvider;
+import net.javacrumbs.shedlock.core.SimpleLock;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,6 +45,9 @@ class EmailOutboxProcessorTest {
     @Autowired private JdbcClient jdbc;
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private EmailSuppressionService suppressionService;
+    @Autowired private LockProvider lockProvider;
+
+    private SimpleLock jobLock;
 
     private final SettableClock clock = new SettableClock();
 
@@ -49,10 +57,45 @@ class EmailOutboxProcessorTest {
     // email_suppression to the same cleanup for the same reason: a suppression left over from an
     // earlier test would make an unrelated later test's "address is not suppressed" assumption
     // false.
+    //
+    // The application context also runs the real EmailOutboxProcessorJob on its schedule (every 30s
+    // by default). A run of it that coincides with a test here would claim some of the test's rows
+    // and break its exact counts, which it did in CI (19 of 20 rows). The job only runs while it
+    // holds its ShedLock lock, so each test holds that same lock from start to end: the scheduled
+    // job skips its runs meanwhile, and a run already in progress is waited for first.
     @BeforeEach
-    void emptyTheOutboxAndSuppressionList() {
+    void emptyTheOutboxAndSuppressionList() throws InterruptedException {
+        jobLock = holdTheScheduledJobsLock();
         jdbcTemplate.update("DELETE FROM email_outbox");
         jdbcTemplate.update("DELETE FROM email_suppression");
+    }
+
+    @AfterEach
+    void releaseTheScheduledJobsLock() {
+        if (jobLock != null) {
+            jobLock.unlock();
+            jobLock = null;
+        }
+    }
+
+    private SimpleLock holdTheScheduledJobsLock() throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
+        while (true) {
+            Optional<SimpleLock> lock =
+                    lockProvider.lock(
+                            new LockConfiguration(
+                                    Instant.now(),
+                                    EmailOutboxProcessorJob.JOB_NAME,
+                                    Duration.ofMinutes(5),
+                                    Duration.ZERO));
+            if (lock.isPresent()) {
+                return lock.get();
+            }
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("the scheduled outbox job never released its lock");
+            }
+            Thread.sleep(50);
+        }
     }
 
     private EmailOutboxProcessor processor(EmailSender sender) {
