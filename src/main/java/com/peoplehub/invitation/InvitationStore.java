@@ -66,6 +66,24 @@ class InvitationStore {
             "UPDATE employee SET password_hash = ?, status = 'ACTIVE', updated_at = ?"
                     + " WHERE id = ? AND organization_id = ? AND status = 'INVITED'";
 
+    /**
+     * An invitation by id <em>within one organization</em>, with its invited employee, locked until
+     * the transaction ends. Another organization's invitation id finds nothing (Spec 15.1, D22).
+     */
+    private static final String SELECT_BY_ID_FOR_UPDATE =
+            "SELECT i.id, i.email_normalized, i.intended_role, i.consumed_at, i.revoked_at,"
+                    + " e.id AS employee_id, e.name AS employee_name, e.email AS employee_email,"
+                    + " e.status AS employee_status"
+                    + " FROM employee_invitation i"
+                    + " JOIN employee e ON e.organization_id = i.organization_id"
+                    + " AND e.email_normalized = i.email_normalized"
+                    + " WHERE i.id = ? AND i.organization_id = ? FOR UPDATE OF i";
+
+    private static final String REVOKE_INVITATION =
+            "UPDATE employee_invitation SET revoked_at = ?"
+                    + " WHERE id = ? AND organization_id = ?"
+                    + " AND consumed_at IS NULL AND revoked_at IS NULL";
+
     private final JdbcClient jdbc;
 
     InvitationStore(JdbcClient jdbc) {
@@ -204,7 +222,54 @@ class InvitationStore {
                 == 1;
     }
 
+    Optional<ManagedInvitation> byIdForUpdate(UUID invitationId, UUID organizationId) {
+        return jdbc.sql(SELECT_BY_ID_FOR_UPDATE)
+                .param(invitationId)
+                .param(organizationId)
+                .query(
+                        (rs, rowNum) ->
+                                new ManagedInvitation(
+                                        rs.getObject("id", UUID.class),
+                                        rs.getString("email_normalized"),
+                                        rs.getString("intended_role"),
+                                        rs.getTimestamp("consumed_at") != null,
+                                        rs.getTimestamp("revoked_at") != null,
+                                        rs.getObject("employee_id", UUID.class),
+                                        rs.getString("employee_name"),
+                                        rs.getString("employee_email"),
+                                        rs.getString("employee_status")))
+                .optional();
+    }
+
+    /** Revokes an open invitation of the organization; false if it was not open. */
+    boolean revoke(UUID invitationId, UUID organizationId, Instant at) {
+        return jdbc.sql(REVOKE_INVITATION)
+                        .param(Timestamp.from(at))
+                        .param(invitationId)
+                        .param(organizationId)
+                        .update()
+                == 1;
+    }
+
     record Organization(String name, String loginKey) {}
+
+    /** An invitation as an Admin manages it (resend, revoke). */
+    record ManagedInvitation(
+            UUID id,
+            String emailNormalized,
+            String role,
+            boolean consumed,
+            boolean revoked,
+            UUID employeeId,
+            String employeeName,
+            String employeeEmail,
+            String employeeStatus) {
+
+        /** Neither accepted nor revoked, and its person is still only invited (B2-4/O8). */
+        boolean isOpen() {
+            return !consumed && !revoked && "INVITED".equals(employeeStatus);
+        }
+    }
 
     /** An invitation found by its token, with what acceptance and preview need. */
     record TokenInvitation(

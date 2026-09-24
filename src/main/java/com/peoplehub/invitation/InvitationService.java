@@ -25,7 +25,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Creating invitations (b2-4, B2-4 decisions; Spec 2.1.5, 3.3, D24, D25).
+ * Creating, resending and revoking invitations (b2-4, B2-4 decisions; Spec 2.1.5, 3.3, D24, D25).
  *
  * <ul>
  *   <li>Who may invite (a minimal role check, not the b3-1 matrix): an Admin or Super Admin invites
@@ -159,8 +159,91 @@ public class InvitationService {
     }
 
     /**
+     * Resends an open invitation (B2-4/O8, O11): the current one is revoked and a new one, with a
+     * new token, a new email and a full new lifetime, takes its place. An expired invitation can be
+     * resent; an accepted or revoked one cannot (409). An Admin may resend Employee invitations
+     * only; a Super Admin any. Another organization's invitation id is not found (404).
+     */
+    @Transactional
+    public InvitationResponse resend(AuthenticatedPrincipal caller, UUID invitationId) {
+        InvitationStore.ManagedInvitation invitation = manageable(caller, invitationId);
+        Instant now = clock.instant();
+        if (!store.revoke(invitation.id(), caller.organizationId(), now)) {
+            throw notOpen();
+        }
+        IssuedInvitation issued =
+                issue(
+                        caller,
+                        invitation.employeeId(),
+                        invitation.emailNormalized(),
+                        invitation.role(),
+                        invitation.employeeEmail(),
+                        invitation.employeeName());
+        audit(
+                caller,
+                issued.invitationId(),
+                invitation.employeeId(),
+                invitation.role(),
+                "INVITATION_RESENT");
+        return new InvitationResponse(
+                issued.invitationId(),
+                invitation.employeeId(),
+                invitation.role(),
+                issued.expiresAt());
+    }
+
+    /**
+     * Revokes an open invitation (B2-4/O8, O11): its token stops working at once. The invited
+     * employee stays {@code INVITED} and can be invited again later (B2-4/O7). Same permissions and
+     * answers as {@link #resend}.
+     */
+    @Transactional
+    public void revoke(AuthenticatedPrincipal caller, UUID invitationId) {
+        InvitationStore.ManagedInvitation invitation = manageable(caller, invitationId);
+        if (!store.revoke(invitation.id(), caller.organizationId(), clock.instant())) {
+            throw notOpen();
+        }
+        audit(
+                caller,
+                invitation.id(),
+                invitation.employeeId(),
+                invitation.role(),
+                "INVITATION_REVOKED");
+    }
+
+    /**
+     * The invitation, locked, if the caller may manage it: Admins and Super Admins only (403);
+     * found only inside the caller's own organization (404); Admin invitations only by a Super
+     * Admin (403); and still open (409).
+     */
+    private InvitationStore.ManagedInvitation manageable(
+            AuthenticatedPrincipal caller, UUID invitationId) {
+        if (!caller.isAdmin()) {
+            throw forbidden();
+        }
+        InvitationStore.ManagedInvitation invitation =
+                store.byIdForUpdate(invitationId, caller.organizationId())
+                        .orElseThrow(
+                                () ->
+                                        new ApiProblemException(
+                                                ProblemType.NOT_FOUND,
+                                                "The requested resource was not found."));
+        if (ADMIN.equals(invitation.role()) && !caller.isSuperAdmin()) {
+            throw forbidden();
+        }
+        if (!invitation.isOpen()) {
+            throw notOpen();
+        }
+        return invitation;
+    }
+
+    private static ApiProblemException notOpen() {
+        return conflict("This invitation has already been accepted or revoked.");
+    }
+
+    /**
      * Creates the invitation row and its email: a fresh token whose raw value goes only into the
-     * email payload. Shared with resend (b2-4 checkpoint 4).
+     * email payload. Shared by invite and resend.
      */
     IssuedInvitation issue(
             AuthenticatedPrincipal caller,
