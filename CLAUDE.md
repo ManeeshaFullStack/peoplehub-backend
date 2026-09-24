@@ -435,6 +435,73 @@ planned branches, not built in `b2-4`:** MFA and any MFA gate for invited Admins
 and revoking pending invitations on deactivation (`b2-6`), RLS (`b2-8`), the permission matrix (`b3-1`), departments
 (`b3-2`), bulk import (`b3-5`), notifications and rate limiting.
 
+### B2-5 decisions (owner-approved 2026-09-24; recorded here so they survive a session or repo reset)
+
+Cite as "B2-5/P4" and so on (never a bare `D#`, which is the spec's). Scope:
+`feature/b2-5-password-policy-lockout-reset` — the password policy including a breached-password check, failed-login
+counting and lockout with backoff, forgot/reset password, change password, and the audit rows and enumeration tests
+that go with them. Not yet implemented; this locks the design before coding. Spec basis: §8.2, §13.0, §15 (items 3, 10),
+§15.1, §17 (B2 row).
+
+- **B2-5/P1 — Breached-password check: an offline list.** A licensed common/breached-password list is bundled with the
+  application, loaded at startup, and checked behind the existing `PasswordSecurityValidator` (B2-2/2). No outbound
+  call, so no availability or privacy dependency on a third-party service. A k-anonymity API (for example HaveIBeenPwned)
+  can be added later behind the same interface without changing any caller.
+- **B2-5/P2 — Password rules: length plus the breached list, no composition rules.** Minimum 12 characters (unchanged),
+  maximum 128, the existing context terms (organization, name, email local part) and the breached list; no "must
+  contain a digit/symbol/uppercase" rules (current NIST SP 800-63B guidance). This is how `b2-5` reads the spec's
+  "minimum length + complexity" (§8.2). One policy everywhere a password is set: registration, invitation acceptance,
+  reset and change.
+- **B2-5/P3 — Lockout state is stored in the database.** Per-account state lives on `employee` (new columns
+  `failed_login_count` and `locked_until`, with their own runtime grants in a new migration). Not Redis: a Redis flush
+  or outage must not reset or lose lockout state (the same reasoning as B0-5/S1). `login_attempt` stays forensic: it
+  stores what was typed and cannot reliably identify one account, and it keeps recording each attempt's address.
+- **B2-5/P4 — Per-account backoff values (`[confirm]`, internal settings, not organization-configurable, like
+  B2-3/5).** After 5 consecutive failures the account is locked for 1 minute, doubling on each further lock up to
+  30 minutes; the count resets on a successful login or a password reset. Environment-overridable.
+- **B2-5/P5 — Per-IP enforcement is deferred.** `b2-5` enforces per-account lockout only. The client address is the
+  direct peer (B2-3/15); behind a load balancer every user would share one address, so per-IP enforcement could lock
+  everyone out. Per-IP lockout (its thresholds, and whether it is a lockout or a rate limit) is decided together with
+  the hosting and trusted-proxy decision (§19), not in `b2-5`. `login_attempt` already records the address of every
+  attempt, so nothing is lost in the meantime.
+- **B2-5/P6 — Reset token in the request body.** `POST /auth/reset-password` takes `{token, password, confirmPassword}`
+  (spec §13.0 gives no path). The reset email carries the token as `resetCode`, the same code-only pattern as
+  invitations (B2-4/O10); a frontend reset link can be added later from a frontend URL setting without changing the
+  flow or its data.
+- **B2-5/P7 — Forgot-password throttle in the database.** At most one reset email per account per 5 minutes and 5 per
+  day, derived from `password_reset_token` rows; the public answer is identical whether or not an email was sent.
+  General request rate limiting (Bucket4j + Redis) stays in `b13-1`, as B2-2/3, B2-3/15 and B2-4/O15 already recorded.
+- **B2-5/P8 — Reset token: 30 minutes, single use.** Stored only as a hash, in a new `password_reset_token` table
+  (tenant-bound, composite foreign key to `employee (organization_id, id)`, the same pattern as V14/V15). Requesting a
+  new token invalidates older unused ones for that account. Internal setting.
+- **B2-5/P9 — Change password is included.** `POST /me/password` with `{currentPassword, newPassword,
+  confirmPassword}`: requires the current password, applies the same policy, revokes the employee's **other** sessions
+  and keeps the current one (§8.2). The sessions list, revoke-one and logout-all remain in `b2-6`.
+- **B2-5/P10 — No "your password was changed/reset" notification email or in-app notification** in `b2-5`; deferred with
+  the notification work (as B2-4/O14). The reset email itself is part of the flow and is built. The B1-3 in-app type
+  `PASSWORD_RESET` stays unused for now.
+- **B2-5/P11 — Only active accounts can reset.** Forgot-password sends nothing for an `INVITED`, `PENDING_VERIFICATION` or
+  `DEACTIVATED` employee, or an organization that is not `ACTIVE`, and gives the identical public answer. An unverified
+  founder uses resend-verification (`b2-2`).
+- **B2-5/P12 — Forgot-password timing: small difference accepted and recorded.** A known active account does extra
+  database work (a token row and an outbox row). That difference is accepted; the wording and status of the answer are
+  identical and tested (§15.1). Making the two paths do identical work is not done in `b2-5`.
+- **B2-5/P13 — A completed reset clears the lockout**, since it proves control of the account's email. A reset also
+  revokes **all** of the employee's sessions (§8.2); two new `refresh_token.revoke_reason` values, `PASSWORD_RESET` and
+  `PASSWORD_CHANGED`, are added by a forward migration (V14's CHECK allows only `ROTATED`, `LOGOUT`, `REUSE_DETECTED`).
+
+**Behaviour that holds across all of the above:** a locked account answers a login exactly like a wrong password (same
+401, same body, same dummy-hash timing), so lockout never reveals that an account exists. Audit rows
+(`PASSWORD_RESET_REQUESTED`, `PASSWORD_RESET_COMPLETED`, `PASSWORD_CHANGED`, `ACCOUNT_LOCKED`) are written only when a
+real organization has been resolved (B0-6/16) and hold ids only, never passwords, tokens or emails; failed logins stay in
+`login_attempt` only.
+
+**Deferred to their planned branches, not built in `b2-5`:** per-IP lockout (with the hosting and trusted-proxy
+decision, §19; B2-5/P5); request rate limiting with Bucket4j (`b13-1`); sessions
+list, revoke-one, logout-all and deactivation (`b2-6`); MFA, step-up and promotion (`b2-7`; a reset must then not bypass
+an organization's MFA requirement); RLS (`b2-8`); Admin-triggered resets and Admin-set passwords (never; D24);
+notifications; the frontend reset page (F1).
+
 ### B0-4 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
 
 - **D1 — Health endpoints.** Split into `/actuator/health/liveness` and `/actuator/health/readiness`. The Dockerfile
