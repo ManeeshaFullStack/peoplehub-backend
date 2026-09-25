@@ -55,6 +55,8 @@ PEOPLEHUB_DB_RUNTIME_PASSWORD=$(secret)
 REDIS_PASSWORD=$(secret)
 PEOPLEHUB_JWT_SIGNING_KEY=$(jwt_signing_key)
 PEOPLEHUB_JWT_SIGNING_KEY_ID=smoke-key
+PEOPLEHUB_MFA_ENCRYPTION_KEY=$(openssl rand -base64 32)
+PEOPLEHUB_MFA_ENCRYPTION_KEY_ID=smoke-mfa-key
 PEOPLEHUB_BACKEND_PORT=$BACKEND_PORT
 PEOPLEHUB_MAILPIT_UI_PORT=$MAILPIT_PORT
 EOF
@@ -201,6 +203,20 @@ if [[ "$bad_start" == *"$bogus_key"* ]]; then
     fail "the rejected signing key is not echoed in the logs"
 else
     pass "the rejected signing key is not echoed in the logs"
+fi
+# MFA secret encryption key (b2-7, B2-7/7): a well-formed base64 value of the wrong length (16 bytes, not 32).
+bogus_mfa_key="$(openssl rand -base64 16)"
+bad_mfa_start="$(compose run --rm --no-deps -e PEOPLEHUB_MFA_ENCRYPTION_KEY="$bogus_mfa_key" backend 2>&1)" && bad_mfa_status=0 || bad_mfa_status=$?
+if [ "$bad_mfa_status" -ne 0 ]; then
+    pass "the backend refuses to start with an invalid MFA encryption key (exit $bad_mfa_status)"
+else
+    fail "the backend refuses to start with an invalid MFA encryption key" "it exited 0"
+fi
+expect_contains "the startup failure points at the MFA key loader" "MfaEncryptionKeys" "$bad_mfa_start"
+if [[ "$bad_mfa_start" == *"$bogus_mfa_key"* ]]; then
+    fail "the rejected MFA encryption key is not echoed in the logs"
+else
+    pass "the rejected MFA encryption key is not echoed in the logs"
 fi
 check "Mailpit is ready" compose exec -T mailpit /mailpit readyz
 warn_count="$(compose logs --no-color backend 2>&1 | grep -cE '"level":"(WARN|ERROR)"' || true)"

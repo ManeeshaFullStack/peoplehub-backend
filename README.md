@@ -68,6 +68,7 @@ The app reads its connections from environment variables, using Spring's standar
 | `PEOPLEHUB_DB_RUNTIME_ROLE` | Name of the runtime role the migrations grant privileges to (default `peoplehub_app`) |
 | `SPRING_DATA_REDIS_HOST`, `SPRING_DATA_REDIS_PORT`, `SPRING_DATA_REDIS_PASSWORD` | Redis |
 | `PEOPLEHUB_JWT_SIGNING_KEY`, `PEOPLEHUB_JWT_SIGNING_KEY_ID` | Access-token signing key and its id; required (see "Authentication") |
+| `PEOPLEHUB_MFA_ENCRYPTION_KEY`, `PEOPLEHUB_MFA_ENCRYPTION_KEY_ID` | Key that encrypts MFA (TOTP) secrets, and its id; required (see "MFA encryption key") |
 | `PEOPLEHUB_SECURITY_APP_ORIGIN` | The frontend's origin, for CORS and the Origin check; optional |
 
 The database settings have no defaults (except the role name): a missing one stops startup immediately.
@@ -209,6 +210,7 @@ src/main/java/com/peoplehub/            # package-by-feature; root package com.p
   profile/                              # GET /me, welcome acknowledgement, POST /me/password
   passwordreset/                        # forgot and reset password (see "Passwords")
   invitation/                           # invitations: invite, resend, revoke, preview, accept (see "Invitations")
+  mfa/                                  # TOTP, MFA secret encryption, recovery codes (see "MFA encryption key")
 src/main/resources/
   application.yml                       # non-secret settings only
   application-local.yml                 # `local` profile: readable console, DEBUG (developer machines only)
@@ -391,6 +393,24 @@ Give it an id (`PEOPLEHUB_JWT_SIGNING_KEY_ID`, for example `2026-09`). To rotate
 the old key's **public** half (`openssl pkey -pubout`) in `PEOPLEHUB_JWT_PREVIOUS_PUBLIC_KEYS` as `oldid:PEM`, deploy,
 and remove it again after 15 minutes (one access-token lifetime). Tests and `spring-boot:test-run` generate a throwaway
 key themselves; `docker/smoke.sh` does too.
+
+### MFA encryption key
+
+TOTP secrets are stored encrypted with AES-256-GCM (b2-7, B2-7/7), never in plain text. The application refuses to start
+without a valid key, even while every organization has MFA disabled. Generate one per environment and never commit it:
+
+```bash
+openssl rand -base64 32   # PEOPLEHUB_MFA_ENCRYPTION_KEY
+```
+
+Give it an id (`PEOPLEHUB_MFA_ENCRYPTION_KEY_ID`, for example `mfa-2026-09`). Each stored secret is
+`keyId:base64(nonce || ciphertext || tag)`, bound to its organization and employee, so a value copied to another account
+cannot be decrypted. To rotate: generate a new key with a new id, move the old one to
+`PEOPLEHUB_MFA_PREVIOUS_ENCRYPTION_KEYS` as `oldid:base64`, and deploy. New secrets use the new key; secrets written
+with the old key stay readable for as long as the old key is listed, so **keep it listed** until no stored secret uses
+it any more (re-enrollment replaces a secret). Removing a key that is still in use makes those people's MFA
+unreadable; they would need an MFA reset. Tests and `spring-boot:test-run` generate a throwaway key themselves;
+`docker/smoke.sh` does too.
 
 ## Invitations
 
