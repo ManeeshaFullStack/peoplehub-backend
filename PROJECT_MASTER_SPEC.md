@@ -14,7 +14,7 @@
 1. Adds the missing **public organization registration/bootstrap flow**. A founder creates an organization and an individual account; that account becomes the organization's first `SUPER_ADMIN`.
 2. Changes the deployment model from “one deployed instance = one company” to a **multi-organization SaaS application with hard tenant isolation**. Every organization can see and operate only on its own tenant. No tenant may list, search, infer, count, inspect, reference, or access another tenant or its users/data.
 3. Makes organization identity explicit: each organization has an immutable internal `organization_id` and a unique, normalized public **organization login key**. The UI labels this field “Organization” / “Organization name”; uniqueness conflicts and login failures use non-enumerating responses.
-4. Defines the complete identity lifecycle: founder registration → email verification → mandatory Super Admin MFA → first-time organization setup → real Super Admin dashboard → invite Admins/employees → invite acceptance → private password creation → role-aware dashboard.
+4. Defines the complete identity lifecycle: founder registration → email verification → first-time organization setup (including the organization's MFA policy) → real Super Admin dashboard → invite Admins/employees → invite acceptance → private password creation → role-aware dashboard.
 5. Adds **direct Admin invitation** while preserving the invariant that every Admin/Super Admin is also an Employee record. Super Admin may still promote an existing employee.
 6. Makes deactivation semantics explicit: deactivated users immediately lose login/API/session access while historical attendance, leave, approvals and audit records remain. Hard deletion is not the normal employee-exit operation.
 7. Declares the supplied Landing, Registration, Login and Dashboard HTML prototypes to be **visual acceptance references only**. Production frontend remains Next.js App Router + TypeScript + Tailwind + TanStack Query; HTML/CSS/JS prototypes are not copied in as the runtime implementation.
@@ -60,7 +60,7 @@
 | D3 | **Restart and OS logoff are treated like shutdown** (the user session ends). The employee checks in again after boot; the gap is not counted. | Cannot reliably tell "restart" from "shutdown" across all OSes; consistent and simple. |
 | D4 | **No midnight auto-checkout.** At org midnight a running session is *split* into two sessions and keeps running, so each day gets the right hours. A safety cap protects against forgotten check-outs: warn at 12h, auto-close at 20h continuous (both configurable, cap can be turned off). | Midnight auto-checkout contradicts your rule; unbounded sessions are a data-integrity risk. |
 | D5 | Corrections are allowed up to **30 days back**; Admin can **lock a month** after that. | Without a window, history can be rewritten forever. |
-| D6 | **MFA is mandatory for Admin and Super Admin.** Optional for employees. | You asked for no compromise on security. |
+| D6 | **MFA is an organization policy: recommended, not globally mandatory.** A Super Admin sets the organization's MFA policy (default `DISABLED`; also `OPTIONAL`, `REQUIRED_FOR_ADMINS`, `REQUIRED_FOR_SELECTED_USERS`, `REQUIRED_FOR_ALL`). Under a `REQUIRED_*` policy, only the users it covers must complete MFA enrollment before they receive a session. Under `OPTIONAL` (and for users a `REQUIRED_*` policy does not cover), MFA never blocks login and users may enable it voluntarily. Under `DISABLED`, MFA is not offered. See 8.3. | Organizations differ in security needs: strong MFA stays available and enforceable without being forced on every workspace (owner decision, 2026-09-23; replaces the earlier "mandatory for Admin and Super Admin" rule). |
 | D7 | **Delete Admin = anonymise (tombstone).** PII and login are destroyed irreversibly; attendance, leave and audit rows stay so history and foreign keys stay intact. | v3's "delete" conflicted with audit-log integrity. |
 | D8 | **Approval links in emails open a confirmation page**; nothing changes until a button is clicked. | Mail scanners auto-click links and would consume or trigger single-use tokens. |
 | D9 | **Nobody approves or edits their own leave or attendance.** A fallback chain picks another approver. At least 2 Super Admins are recommended and the system warns if there is only one. | Prevents self-approval and stalled requests. |
@@ -178,19 +178,19 @@ On successful submission:
    - founder belongs to the newly created `organization_id`.
 4. Send a single-use, short-lived email-verification link through the outbox.
 5. Do **not** issue a normal authenticated workspace session before verification.
-6. After email verification, require TOTP MFA enrollment and recovery-code acknowledgement.
+6. Email verification activates the organization and the founder as its first `SUPER_ADMIN`. MFA is not a registration or verification step; the founder chooses the organization's MFA policy during setup and may enroll whenever that policy offers MFA (8.3).
 7. Run first-time organization setup.
 8. Mark onboarding complete and enter the **real Super Admin dashboard**.
 
 The founder's password is their own private credential. PeopleHub never exposes it to another user and never asks the founder to create passwords for invitees.
 
 ### 2.1.4 First-time organization setup
-After verification + MFA, the founder completes a short setup flow using the real organization settings model:
+After verification, the founder completes a short setup flow using the real organization settings model:
 - Organization: display name, timezone.
 - Work schedule: weekly offs, expected daily hours.
 - Attendance safeguards: warning/cap defaults and desktop-agent policy.
 - Leave basics: enabled leave types/policy defaults.
-- Security: MFA already enrolled; review recovery codes/security defaults.
+- Security: choose the organization's MFA policy (default `DISABLED`, 8.3), unless the policy is `DISABLED` optionally enroll the founder's own MFA, and review security defaults.
 - Team: optional invitation of the first Admin/employees.
 
 Completing setup routes to the standard Super Admin dashboard. There is no permanently separate “setup dashboard.”
@@ -205,7 +205,7 @@ Activation:
 - never allows changing the invitation's organization or role;
 - sets password;
 - activates the Employee identity;
-- requires MFA before workspace access for `ADMIN`/`SUPER_ADMIN`; Employee MFA remains optional;
+- applies the organization's MFA policy (8.3): MFA enrollment is required before workspace access only when the policy requires it for that person; otherwise MFA remains optional;
 - shows the one-time welcome experience;
 - routes to the role-appropriate dashboard.
 
@@ -282,15 +282,15 @@ Name-only groupings (no nesting). Each employee belongs to **at most one** depar
 - Nobody may approve or edit their own leave or attendance (D9).
 
 ### 3.3 Admin lifecycle (Super Admin only)
-- **Add Admin:** promote an existing Employee. No separate signup. MFA enrolment is forced at next login.
+- **Add Admin:** promote an existing Employee. No separate signup. MFA is not a universal requirement of promotion: if the organization's MFA policy requires MFA for the promoted person, they enroll at their next sign-in, before any Admin function (8.3).
 - **Deactivate Admin:** reversible; blocks login; revokes all sessions and tokens; reassigns their pending approvals (7.2).
 - **Reactivate:** restores prior access exactly as it was; MFA still applies.
-- **Delete Admin (irreversible):** the employee row becomes a **tombstone**: name/email/phone/password/MFA/devices destroyed, email freed for reuse, display name becomes "Former employee #id". Attendance, leave and audit rows are **retained** and point to the tombstone; they never carry to a re-onboarded account. Requires step-up auth (re-enter password + MFA) and a typed confirmation.
+- **Delete Admin (irreversible):** the employee row becomes a **tombstone**: name/email/phone/password/MFA/devices destroyed, email freed for reuse, display name becomes "Former employee #id". Attendance, leave and audit rows are **retained** and point to the tombstone; they never carry to a re-onboarded account. Requires step-up auth (8.3) and a typed confirmation.
 - **Last Super Admin protection:** the last active Super Admin cannot be deleted, deactivated or demoted. A Super Admin cannot delete or deactivate themselves. Ownership transfer is an explicit flow. The system warns until 2 or more Super Admins exist.
 - **Break-glass recovery:** documented CLI/runbook procedure (needs server access) to restore a Super Admin if all are locked out; the action is audit-logged.
 
 
-**v9 addition — direct Admin invitation:** Super Admin may invite a brand-new person directly as Admin instead of first activating them as Employee and then promoting them. The backend still creates one Employee identity with `role=ADMIN`, `status=INVITED`, tenant-bound to the caller's organization. Invitation acceptance sets the invitee's private password and then forces MFA enrollment before first Admin access. Existing-employee promotion remains supported and requires step-up authentication. Neither path can target another organization.
+**v9 addition — direct Admin invitation:** Super Admin may invite a brand-new person directly as Admin instead of first activating them as Employee and then promoting them. The backend still creates one Employee identity with `role=ADMIN`, `status=INVITED`, tenant-bound to the caller's organization. Invitation acceptance sets the invitee's private password; MFA enrollment before first Admin access is required only when the organization's MFA policy requires it for that person (8.3). Existing-employee promotion remains supported and requires step-up authentication. Neither path can target another organization.
 ### 3.4 Bulk employee import (CSV)
 Columns: employee code, name, email, department (optional), join date. Rules:
 - Validate **row by row**: malformed email, duplicate email in file or in org, unknown department, missing join date.
@@ -550,12 +550,12 @@ The count backing both dashboard taglines (5.6, D19) is a single read query — 
 ### 8.2 Account flows
 - **Register organization:** public founder-only bootstrap described in 2.1.3. Successful registration creates one tenant plus its founding `SUPER_ADMIN`; it does not create a general public user-signup path.
 - **Verify founder email:** single-use, expiring verification token; resend is rate-limited and always safe against enumeration.
-- **Founder MFA:** mandatory TOTP enrollment + recovery-code acknowledgement before first workspace access.
+- **Founder MFA:** not part of registration or verification. The founder becomes the Super Admin first, sets the organization's MFA policy, and may enroll whenever that policy offers MFA (8.3).
 - **First-time organization setup:** 2.1.4; completion enters the real Super Admin dashboard.
 - **Login for every role = Organization + company email + password.** No role picker. Generic errors and consistent timing prevent organization/account enumeration.
 - **Invite/activation:** single-use, expiring, resend-supported set-password link. Invitation fixes organization + role; invitee cannot alter either.
-- **Direct Admin invitation:** Super Admin only; new identity is still an Employee record; MFA mandatory before first Admin session.
-- **Existing Employee → Admin promotion:** Super Admin only, step-up protected; mandatory MFA enrollment at/after promotion before Admin functions.
+- **Direct Admin invitation:** Super Admin only; new identity is still an Employee record; MFA before the first Admin session only when the organization's MFA policy requires it (8.3).
+- **Existing Employee → Admin promotion:** Super Admin only, step-up protected. MFA enrollment is not a precondition of promotion; when the organization's MFA policy requires MFA for the promoted person, they enroll at their next sign-in, before any Admin function.
 - **Forgot password:** organization + email input, single-use short-lived token, always-same response, rate-limited per account/IP, all sessions revoked on reset.
 - Change password: requires current password; revokes other sessions.
 - Password policy: minimum length + complexity + **breached-password check** (k-anonymity API or offline list).
@@ -564,9 +564,17 @@ The count backing both dashboard taglines (5.6, D19) is a single read query — 
 - **Deactivation:** blocks login immediately and revokes sessions/tokens while retaining historical records (D26).
 
 ### 8.3 MFA and step-up
-- TOTP; **mandatory for Admin and Super Admin (D6)**, optional for employees; 10 single-use recovery codes.
-- MFA reset only by an authorised role (Employee→Admin/Super Admin; Admin→Super Admin), audited, and it forces re-enrolment.
-- **Step-up auth** (fresh password/MFA within 5 minutes) for: delete Admin, promote/demote roles, bulk import, unlock month, MFA reset, export of the full org, changing security settings.
+- TOTP authenticator apps; 10 single-use recovery codes. **MFA is recommended but not globally mandatory: the organization's MFA policy decides enforcement (D6).**
+- Organization MFA policy, set by a Super Admin in the security settings (changing it is step-up protected and audited):
+  - `DISABLED` (default for a new organization): MFA is off. Nobody is required, enrollment is not offered, and no MFA reminders are shown.
+  - `OPTIONAL`: MFA does not block login. Any user may enable MFA voluntarily, and security reminders may encourage enrollment.
+  - `REQUIRED_FOR_ADMINS`: covers Admin and Super Admin. Employees are not covered.
+  - `REQUIRED_FOR_SELECTED_USERS`: covers the users a Super Admin selects. Other users are not covered.
+  - `REQUIRED_FOR_ALL`: covers every user.
+- Under a `REQUIRED_*` policy, enforcement applies only to the users the policy covers: a covered user who has not enrolled receives no session until MFA enrollment is completed. Users the policy does not cover are treated as under `OPTIONAL`.
+- A user who has enrolled is always challenged at sign-in, whatever the policy; changing the policy to `DISABLED` does not remove an existing enrollment.
+- MFA reset only by an authorised role (Employee→Admin/Super Admin; Admin→Super Admin), audited, and it forces re-enrolment when the policy requires MFA for that user.
+- **Step-up auth** (fresh password, plus a TOTP or recovery code when the user has MFA enrolled, within 5 minutes) for: delete Admin, promote/demote roles, bulk import, unlock month, MFA reset, export of the full org, changing security settings.
 
 ### 8.4 Presence (unchanged in spirit)
 Presence is purely cosmetic and never drives attendance or auth: heartbeat only while the tab is visible/focused, **minimum 10-minute grace** before "away", multiple tabs may heartbeat independently. Feeds the Admin "who's online" widget and the Active/Idle split in the Live Attendance Dashboard (5.5) — it never changes an employee's actual hours.
@@ -692,12 +700,12 @@ The production login visually matches the supplied premium split-screen experien
 The production registration visually matches the supplied registration prototype:
 - premium split layout;
 - explicit copy that the registrant becomes the **founding Super Admin**;
-- setup-journey panel: Create organization → Verify email → Secure account/MFA → Enter PeopleHub;
+- setup-journey panel: Create organization → Verify email → Set up workspace (including the MFA policy) → Enter PeopleHub;
 - organization name + timezone;
 - founder full name + company email + password + confirm password;
 - terms/privacy acknowledgement;
 - “Already have a workspace? Sign in” → `/login`;
-- submit → verification-pending screen, never directly bypassing verification/MFA.
+- submit → verification-pending screen, never directly bypassing email verification.
 
 ### 10.4.7 Invitation / activation acceptance
 New route family:
@@ -708,7 +716,7 @@ New route family:
 - `/auth/recovery-codes`
 - `/welcome`
 
-Invite screen clearly shows the inviting organization and intended role. The invitee sets their own password. Admin invitees complete MFA before dashboard access. Expired/used/revoked tokens get a polished safe state with a resend/contact-admin path; errors never leak unrelated tenant data.
+Invite screen clearly shows the inviting organization and intended role. The invitee sets their own password. Invitees complete MFA enrollment before dashboard access only when the organization's MFA policy requires it for them (8.3). Expired/used/revoked tokens get a polished safe state with a resend/contact-admin path; errors never leak unrelated tenant data.
 
 ### 10.4.8 Dashboard acceptance
 The production dashboard follows the supplied end-to-end dashboard reference:
@@ -750,7 +758,7 @@ Every major page must define: loading skeleton, empty state, field validation, s
 | `email_approval_token_hours` / `email_approval_requires_login` | 72 / false | |
 | `org_default_approver_id`, `backup_approver_id` | required | backup used for Super Admin requests |
 | `sound_enabled` | true | |
-| `mfa_required_roles` | SUPER_ADMIN, ADMIN | security setting |
+| `mfa_policy` | DISABLED | DISABLED / OPTIONAL / REQUIRED_FOR_ADMINS / REQUIRED_FOR_SELECTED_USERS / REQUIRED_FOR_ALL; security setting, Super Admin only (8.3) |
 | `refresh_sliding_days` / `refresh_absolute_days` | 30 / 90 | security setting |
 | `presence_grace_minutes` | 10 | minimum 10 |
 
@@ -907,7 +915,7 @@ Standards: **pagination + sorting on every list endpoint (13.1)**, **request val
 2. Authorization in the service layer, IDOR-proof self endpoints, Admin cannot touch Super Admin, no self-approval.
 3. Passwords hashed with Argon2id/bcrypt; breached-password check; lockout/backoff; generic auth errors.
 4. Access token in memory; rotating refresh cookie with reuse detection, sliding + **absolute** lifetime; same-site deployment; CSRF protection.
-5. Mandatory MFA for Admin/Super Admin with recovery codes; step-up auth for destructive actions.
+5. MFA (TOTP with recovery codes) available to every organization and enforced according to the organization's MFA policy (8.3); step-up auth for destructive actions.
 6. Approval tokens single-use, hashed, bound to request+approver, expiring, GET-safe confirmation page.
 7. Agent: keys in OS keystore, signed events, replay protection, signed installers/updates, revocable devices.
 8. CSV/Excel formula-injection defence on import and export; row/size limits on uploads.
@@ -993,7 +1001,7 @@ Order: **Backend fully complete and tagged `v1.0.0` (B0-B14) → Frontend (F0-F1
 |---|---|---|---|
 | **B0 Foundation** | Skeleton, Flyway, Testcontainers, Redis, ShedLock, `docker-compose.yml` + Dockerfile (16.4), structured JSON logging + MDC correlation id (14.1), global validation `@ControllerAdvice` (13.2), API standards + OpenAPI (incl. pagination/sort envelope, 13.1), error format, Sentry, health, injectable clock, **append-only audit log**, CI | `b0-1-skeleton-ci`, `b0-2-db-flyway-testcontainers`, `b0-3-api-standards-pagination-openapi`, `b0-4-logging-validation-observability`, `b0-5-scheduler-shedlock`, `b0-6-audit-log-append-only`, `b0-7-docker-compose` | CI green; sample migration; OpenAPI published; audit table rejects UPDATE/DELETE; `docker compose up` boots the full stack locally; a deliberately bad request returns a field-level RFC 7807 error |
 | **B1 Email & notification platform** *(moved earlier: invites need it)* | EmailService, outbox, retry/backoff, send log, templates, in-app notifications + SSE, bounce/suppression | `b1-1-email-service-outbox`, `b1-2-templates-retry-log`, `b1-3-inapp-sse`, `b1-4-bounce-suppression` | Invite mail sent through dev SMTP with retry; failure visible to Admin; SSE test passes |
-| **B2 Org, tenant isolation, employees & auth** | Multi-org tenant schema + DB isolation, organization registration/bootstrap, founder verification, founding Super Admin, onboarding state, tenant-scoped employee schema, Organization+email+password login, JWT + rotating refresh (absolute cap), Employee/Admin invitations, activation, direct Admin invite + promotion, deactivation/revocation, forgot/change password, password policy + breach check, lockout, sessions list/revoke, TOTP + recovery + step-up | `b2-1-org-tenant-employee-schema`, `b2-2-org-bootstrap-founder-verification`, `b2-3-login-jwt-refresh-tenant-context`, `b2-4-invite-activation-admin-invite`, `b2-5-password-policy-lockout-reset`, `b2-6-sessions-deactivation-revoke`, `b2-7-mfa-stepup-onboarding`, `b2-8-tenant-isolation-security-tests` | Full founder→MFA→onboarding→dashboard-ready auth flow and invite→activation flow via API tests; token reuse revokes family; cross-tenant UUID attacks fail; org/account enumeration tests pass; Organization A cannot discover/access Organization B |
+| **B2 Org, tenant isolation, employees & auth** | Multi-org tenant schema + DB isolation, organization registration/bootstrap, founder verification, founding Super Admin, onboarding state, tenant-scoped employee schema, Organization+email+password login, JWT + rotating refresh (absolute cap), Employee/Admin invitations, activation, direct Admin invite + promotion, deactivation/revocation, forgot/change password, password policy + breach check, lockout, sessions list/revoke, TOTP + recovery + step-up | `b2-1-org-tenant-employee-schema`, `b2-2-org-bootstrap-founder-verification`, `b2-3-login-jwt-refresh-tenant-context`, `b2-4-invite-activation-admin-invite`, `b2-5-password-policy-lockout-reset`, `b2-6-sessions-deactivation-revoke`, `b2-7-mfa-stepup-onboarding`, `b2-8-tenant-isolation-security-tests` | Full founder→verification→onboarding (MFA policy per 8.3)→dashboard-ready auth flow and invite→activation flow via API tests; token reuse revokes family; cross-tenant UUID attacks fail; org/account enumeration tests pass; Organization A cannot discover/access Organization B |
 | **B3 Roles, departments, calendar & admin lifecycle** | RBAC + authorization matrix, departments (CRUD, add/remove members, single-membership, own-department name-only roster endpoint), employee CRUD/deactivate with department assignment on create/edit, **paginated/sortable/searchable employee directory endpoint (3.5)**, admin lifecycle (tombstone, last-Super-Admin guard), bulk CSV import, org calendar (`calendar_event`: holidays + events, Admin CRUD, employee read-only), org settings API (cached, 13.3) | `b3-1-rbac-authz-matrix`, `b3-2-departments-membership-roster`, `b3-3-employee-crud-directory`, `b3-4-admin-lifecycle-tombstone`, `b3-5-bulk-import`, `b3-6-calendar-org-settings-cache` | Every endpoint has a negative authz test; department roster endpoint never accepts a caller-supplied department id; directory search/filter/sort/paginate all verified together; import report per row; last Super Admin cannot be removed |
 | **B4 Attendance core** | Session schema + constraints, check-in/out idempotent, `today` + `time`, day-split job, safety cap + warnings, `attendance_day` rollup, admin view/edit | `b4-1-session-schema`, `b4-2-check-in-out-idempotent`, `b4-3-today-time`, `b4-4-day-split-safety-cap`, `b4-5-day-rollup`, `b4-6-admin-view-edit` | Session survives simulated restart; two parallel check-ins yield one session; midnight split correct across org timezone; job catch-up tested |
 | **B5 Device pairing & shutdown events** | Pairing codes, device registry, signed event ingestion, replay protection, binding + last-device-down logic, unclean-shutdown estimate, device management | `b5-1-device-pairing`, `b5-2-signed-events-shutdown-close`, `b5-3-unclean-shutdown-estimate`, `b5-4-device-management` | Simulated agent events close/keep sessions per 4.4 rules; forged/replayed events rejected |
@@ -1192,7 +1200,7 @@ A consolidated go/no-go list for launch, pulling together items that already exi
 - [ ] Sentry, Actuator metrics and alerts (job failure, email-failure rate, login-failure spikes, error rate) live and tested by deliberately triggering each one (14.2).
 
 **Security** (full list in Section 15 — restated here as a launch gate, not repeated in full)
-- [ ] MFA enforced for Admin/Super Admin; step-up auth verified for every destructive action (8.3).
+- [ ] MFA enforced according to each organization's MFA policy (a required user gets no session without it; an optional user is never blocked); step-up auth verified for every destructive action (8.3).
 - [ ] Rate limiting active on login, reset, approvals, check-in/out, exports, agent endpoints (15).
 - [ ] Dependency/SAST/secret scans clean; SonarQube for IDE findings triaged, not just silenced (21, 16.2).
 - [ ] SPF/DKIM/DMARC verified for the sending domain (9.2, R3).
@@ -1206,11 +1214,11 @@ A consolidated go/no-go list for launch, pulling together items that already exi
 
 
 ### 22.1 v9 launch gates — organization bootstrap, isolation and UI
-- [ ] Founder can register an organization, verify email, enroll MFA, complete setup and reach the real Super Admin dashboard.
+- [ ] Founder can register an organization, verify email, complete setup (including choosing the organization's MFA policy, with optional founder MFA enrollment) and reach the real Super Admin dashboard.
 - [ ] Registration transaction cannot leave an orphan organization or orphan founder.
 - [ ] Employee invitation → private password → welcome → Employee dashboard works end-to-end.
-- [ ] Direct Admin invitation → private password → mandatory MFA → Admin dashboard works end-to-end.
-- [ ] Existing Employee promotion to Admin is step-up protected and MFA-enforced.
+- [ ] Direct Admin invitation → private password → MFA enrollment when the organization's policy requires it → Admin dashboard works end-to-end.
+- [ ] Existing Employee promotion to Admin is step-up protected; MFA is enforced at the promoted Admin's next sign-in when the organization's policy requires it.
 - [ ] Deactivated Employee/Admin cannot log in, refresh, use an existing session, receive tenant SSE, or use paired device authorization.
 - [ ] Historical attendance/leave/audit rows remain valid after deactivation.
 - [ ] Automated cross-tenant test suite proves Organization A cannot read/write/search/export/subscribe to Organization B.
