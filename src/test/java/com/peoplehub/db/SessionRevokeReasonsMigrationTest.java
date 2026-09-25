@@ -80,7 +80,7 @@ class SessionRevokeReasonsMigrationTest {
     }
 
     @Test
-    void theCheckListsExactlyTheSevenReasons() {
+    void theCheckStillListsTheSevenReasons() {
         String definition =
                 jdbc.queryForObject(
                         "SELECT pg_get_constraintdef(oid) FROM pg_constraint"
@@ -93,7 +93,8 @@ class SessionRevokeReasonsMigrationTest {
                         .results()
                         .map(match -> match.group(1))
                         .toList();
-        assertThat(values).containsExactlyInAnyOrderElementsOf(REASONS);
+        // V19 (b2-7) extends the list; the exact list is asserted by MfaPolicyMigrationTest.
+        assertThat(values).containsAll(REASONS);
     }
 
     @Test

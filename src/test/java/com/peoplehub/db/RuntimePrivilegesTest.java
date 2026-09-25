@@ -79,6 +79,11 @@ class RuntimePrivilegesTest {
                     // b2-5 (V17): SELECT is table-level; INSERT and UPDATE are both column-level on
                     // strict subsets, same reasoning as every table above.
                     Map.entry("password_reset_token", Set.of("SELECT")),
+                    // b2-7 (V21, V22): SELECT is table-level; INSERT (and, for mfa_challenge,
+                    // UPDATE)
+                    // are column-level on strict subsets. session_step_up has no UPDATE at all.
+                    Map.entry("mfa_challenge", Set.of("SELECT")),
+                    Map.entry("session_step_up", Set.of("SELECT")),
                     Map.entry("flyway_schema_history", Set.of()));
 
     private static final Set<String> AUDIT_INSERT_COLUMNS =
@@ -141,7 +146,14 @@ class RuntimePrivilegesTest {
      * b2-1 (V8) grants UPDATE on exactly these organization columns. Not id/login_key_normalized.
      */
     private static final Set<String> ORGANIZATION_UPDATE_COLUMNS =
-            Set.of("name", "timezone", "status", "onboarding_completed_at", "updated_at");
+            Set.of(
+                    "name",
+                    "timezone",
+                    "status",
+                    "onboarding_completed_at",
+                    "updated_at",
+                    // b2-7 (V19): the organization MFA policy.
+                    "mfa_policy");
 
     /**
      * b2-1 (V9) grants INSERT on exactly these employee columns. Not id/created_at/updated_at
@@ -163,7 +175,8 @@ class RuntimePrivilegesTest {
     /**
      * b2-1 (V9) grants UPDATE on exactly these employee columns, across four narrow use-case
      * grants. employee_code is deliberately absent from every one (immutable by privilege, B0-6/12
-     * discipline); role and email/email_normalized wait for the branch that actually changes them.
+     * discipline); email/email_normalized wait for the branch that actually changes them; role
+     * arrived with b2-7 (V19).
      */
     private static final Set<String> EMPLOYEE_UPDATE_COLUMNS =
             Set.of(
@@ -179,7 +192,14 @@ class RuntimePrivilegesTest {
                     "updated_at",
                     // b2-5 (V16): per-account lockout state.
                     "failed_login_count",
-                    "locked_until");
+                    "locked_until",
+                    // b2-7 (V19): promotion changes the role; MFA enrollment, selection, replay
+                    // protection and reminder dismissal.
+                    "role",
+                    "mfa_required",
+                    "mfa_enrolled_at",
+                    "mfa_totp_last_step",
+                    "mfa_reminder_dismissed_at");
 
     /** b2-1 (V10) grants INSERT on exactly these employee_invitation columns. Not id/created_at. */
     private static final Set<String> EMPLOYEE_INVITATION_INSERT_COLUMNS =
@@ -223,12 +243,15 @@ class RuntimePrivilegesTest {
     private static final Set<String> LOGIN_ATTEMPT_INSERT_COLUMNS =
             Set.of("organization_login_key_attempted", "email_attempted", "ip", "success");
 
-    /** b2-1 (V11) grants INSERT on exactly these mfa_recovery_code columns. Not id/created_at. */
+    /**
+     * b2-1 (V11) and b2-7 (V20, organization_id) grant INSERT on exactly these. Not id/created_at.
+     */
     private static final Set<String> MFA_RECOVERY_CODE_INSERT_COLUMNS =
-            Set.of("employee_id", "code_hash");
+            Set.of("organization_id", "employee_id", "code_hash");
 
-    /** b2-1 (V11) grants UPDATE on exactly this one mfa_recovery_code column. */
-    private static final Set<String> MFA_RECOVERY_CODE_UPDATE_COLUMNS = Set.of("used_at");
+    /** b2-1 (V11, used_at) and b2-7 (V20, invalidated_at) grant UPDATE on exactly these. */
+    private static final Set<String> MFA_RECOVERY_CODE_UPDATE_COLUMNS =
+            Set.of("used_at", "invalidated_at");
 
     /**
      * b2-2 (V13) grants INSERT on exactly these organization_verification_token columns. Not
@@ -251,6 +274,32 @@ class RuntimePrivilegesTest {
     /** b2-5 (V17) grants UPDATE on exactly these two password_reset_token columns. */
     private static final Set<String> PASSWORD_RESET_TOKEN_UPDATE_COLUMNS =
             Set.of("consumed_at", "invalidated_at");
+
+    /**
+     * b2-7 (V21) grants INSERT on exactly these mfa_challenge columns. Not id/created_at
+     * (database-generated) and not failed_attempts/consumed_at/invalidated_at (a new challenge is
+     * unused).
+     */
+    private static final Set<String> MFA_CHALLENGE_INSERT_COLUMNS =
+            Set.of(
+                    "organization_id",
+                    "employee_id",
+                    "token_hash",
+                    "purpose",
+                    "device_label",
+                    "ip",
+                    "expires_at");
+
+    /** b2-7 (V21) grants UPDATE on exactly the three state columns of mfa_challenge. */
+    private static final Set<String> MFA_CHALLENGE_UPDATE_COLUMNS =
+            Set.of("failed_attempts", "consumed_at", "invalidated_at");
+
+    /**
+     * b2-7 (V22) grants INSERT on exactly these session_step_up columns. Not id or verified_at: the
+     * database, never the application, records when a step-up happened. No UPDATE at all.
+     */
+    private static final Set<String> SESSION_STEP_UP_INSERT_COLUMNS =
+            Set.of("organization_id", "employee_id", "session_id", "method");
 
     @Autowired private JdbcTemplate jdbc;
 
@@ -835,7 +884,7 @@ class RuntimePrivilegesTest {
     }
 
     @Test
-    void mfaRecoveryCodeUpdateIsGrantedOnlyOnUsedAt() {
+    void mfaRecoveryCodeUpdateIsGrantedOnlyOnUsedAtAndInvalidatedAt() {
         for (String column :
                 jdbc.queryForList(
                         "SELECT column_name FROM information_schema.columns"
@@ -970,6 +1019,56 @@ class RuntimePrivilegesTest {
                         String.class);
 
         assertThat(acl).noneMatch(entry -> entry.startsWith("="));
+    }
+
+    @Test
+    void mfaChallengeInsertAndUpdateAreGrantedOnExactlyTheExpectedColumns() {
+        assertColumnPrivileges("mfa_challenge", "INSERT", MFA_CHALLENGE_INSERT_COLUMNS);
+        assertColumnPrivileges("mfa_challenge", "UPDATE", MFA_CHALLENGE_UPDATE_COLUMNS);
+        assertThat(MFA_CHALLENGE_INSERT_COLUMNS)
+                .doesNotContain(
+                        "id", "created_at", "failed_attempts", "consumed_at", "invalidated_at");
+    }
+
+    @Test
+    void sessionStepUpIsInsertOnlyAndNeverChoosesItsTime() {
+        assertColumnPrivileges("session_step_up", "INSERT", SESSION_STEP_UP_INSERT_COLUMNS);
+        assertColumnPrivileges("session_step_up", "UPDATE", Set.of());
+        assertThat(SESSION_STEP_UP_INSERT_COLUMNS).doesNotContain("id", "verified_at");
+    }
+
+    @Test
+    void theB27TablesHaveNoReferencesPrivilegeAndGrantNothingToPublic() {
+        for (String table : List.of("mfa_challenge", "session_step_up")) {
+            assertColumnPrivileges(table, "REFERENCES", Set.of());
+            List<String> acl =
+                    jdbc.queryForList(
+                            "SELECT unnest(relacl)::text FROM pg_class"
+                                    + " WHERE oid = ('public.' || ?)::regclass",
+                            String.class,
+                            table);
+            assertThat(acl).as(table).noneMatch(entry -> entry.startsWith("="));
+        }
+    }
+
+    private void assertColumnPrivileges(String table, String privilege, Set<String> expected) {
+        for (String column :
+                jdbc.queryForList(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                        String.class,
+                        table)) {
+            Boolean has =
+                    jdbc.queryForObject(
+                            "SELECT has_column_privilege(?, ('public.' || ?)::regclass, ?, ?)",
+                            Boolean.class,
+                            ROLE,
+                            table,
+                            column,
+                            privilege);
+            assertThat(has)
+                    .as(privilege + " on " + table + "." + column)
+                    .isEqualTo(expected.contains(column));
+        }
     }
 
     @Test

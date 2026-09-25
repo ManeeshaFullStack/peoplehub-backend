@@ -146,11 +146,11 @@ class EmployeeRuntimeRoleTest {
     }
 
     @Test
-    void roleAndEmailCannotBeUpdatedInB21() throws SQLException {
+    void emailCannotBeUpdated() throws SQLException {
         UUID org = insertOrganization();
         UUID id = insertEmployee(org);
 
-        assertDenied("UPDATE employee SET role = 'ADMIN' WHERE id = '" + id + "'");
+        // role became updatable in b2-7 (V19, promotion): MfaPolicyRuntimeRoleTest.
         assertDenied("UPDATE employee SET email = 'new@example.com' WHERE id = '" + id + "'");
         assertDenied(
                 "UPDATE employee SET email_normalized = 'new@example.com' WHERE id = '" + id + "'");
@@ -164,7 +164,8 @@ class EmployeeRuntimeRoleTest {
         try (PreparedStatement ps =
                 runtime.prepareStatement(
                         "UPDATE employee SET password_hash = 'hash', mfa_enabled = true,"
-                                + " mfa_totp_secret = 'ciphertext', welcome_seen_at = now(),"
+                                + " mfa_totp_secret = 'ciphertext', mfa_enrolled_at = now(),"
+                                + " welcome_seen_at = now(),"
                                 + " status = 'ACTIVE', updated_at = now() WHERE id = ?")) {
             ps.setObject(1, id);
             assertThat(ps.executeUpdate()).isEqualTo(1);
