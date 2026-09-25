@@ -832,7 +832,7 @@ Public/non-authenticated:
 - `POST /api/v1/public/invitations/{token}/accept` — set invitee password; cannot change org/role.
 
 Authenticated:
-- `POST /api/v1/me/mfa/enrol`, `POST /api/v1/me/mfa/confirm`, recovery-code acknowledgement.
+- `POST /api/v1/me/mfa/enroll`, `POST /api/v1/me/mfa/confirm`, recovery-code acknowledgement.
 - `GET /api/v1/me` includes organization display data, role, firstName, onboarding state.
 - `PATCH /api/v1/organization/onboarding` / completion endpoint for founder setup.
 - `POST /api/v1/admin/employees/invite` — Admin/Super Admin, tenant-local Employee invitation.
