@@ -12,6 +12,7 @@ import java.util.UUID;
  *     never parses names itself
  * @param welcomeSeenAt when the one-time welcome screen was acknowledged, or {@code null} while it
  *     should still be shown (Spec 10.2)
+ * @param mfa the caller's MFA state under their organization's policy (b2-7, B2-7/20)
  */
 public record MeResponse(
         UUID id,
@@ -22,8 +23,19 @@ public record MeResponse(
         String status,
         LocalDate joinDate,
         Instant welcomeSeenAt,
-        Organization organization) {
+        Organization organization,
+        Mfa mfa) {
 
     /** The employee's own organization: display data only, never another tenant's. */
     public record Organization(String name, String timezone, boolean onboardingCompleted) {}
+
+    /**
+     * The caller's MFA state (b2-7, B2-7/20, B2-7/27), all decided on the server.
+     *
+     * @param enabled whether the caller has confirmed MFA enrollment
+     * @param required whether the organization's policy requires MFA of the caller
+     * @param policy the organization's MFA policy
+     * @param showReminder whether to show the (never blocking) reminder to enable MFA now
+     */
+    public record Mfa(boolean enabled, boolean required, String policy, boolean showReminder) {}
 }

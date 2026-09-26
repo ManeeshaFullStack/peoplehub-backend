@@ -210,7 +210,7 @@ src/main/java/com/peoplehub/            # package-by-feature; root package com.p
   profile/                              # GET /me, welcome acknowledgement, POST /me/password
   passwordreset/                        # forgot and reset password (see "Passwords")
   invitation/                           # invitations: invite, resend, revoke, preview, accept (see "Invitations")
-  mfa/                                  # TOTP, MFA secret encryption, recovery codes (see "MFA encryption key")
+  mfa/                                  # MFA policy, TOTP, secret encryption, recovery codes, /me/mfa enrollment
 src/main/resources/
   application.yml                       # non-secret settings only
   application-local.yml                 # `local` profile: readable console, DEBUG (developer machines only)
@@ -411,6 +411,24 @@ with the old key stay readable for as long as the old key is listed, so **keep i
 it any more (re-enrollment replaces a secret). Removing a key that is still in use makes those people's MFA
 unreadable; they would need an MFA reset. Tests and `spring-boot:test-run` generate a throwaway key themselves;
 `docker/smoke.sh` does too.
+
+### MFA policy and enrollment
+
+Each organization has an MFA policy (`organization.mfa_policy`, b2-7, B2-7/1), `DISABLED` by default: `DISABLED`,
+`OPTIONAL`, `REQUIRED_FOR_ADMINS`, `REQUIRED_FOR_SELECTED_USERS` or `REQUIRED_FOR_ALL`. `GET /me` carries an `mfa`
+object (`enabled`, `required`, `policy`, `showReminder`), all decided on the server. So far (b2-7 in progress) a signed-in
+person can enroll voluntarily whenever the policy is not `DISABLED`:
+
+- `POST /me/mfa/enroll` returns a new TOTP secret (base32) and its `otpauth://` URI once; the secret is stored encrypted
+  and pending. Calling it again before confirming replaces the pending secret.
+- `POST /me/mfa/confirm` with `{code}` (the six digits the app shows) enables MFA and returns ten recovery codes once;
+  only their hashes are stored. Audited as `MFA_ENROLLED`.
+- `POST /me/mfa/reminder/dismiss` hides the reminder for `peoplehub.mfa.reminder-interval` (`P7D`,
+  `PEOPLEHUB_MFA_REMINDER_INTERVAL`). Only people who may enroll, are not enrolled and are not required are reminded.
+
+Answers carrying a secret or codes are sent with `Cache-Control: no-store`. Enrolling again while enrolled is refused
+(409) until step-up authentication exists. Not built yet: the sign-in challenge and required enrollment at sign-in,
+step-up, disabling and resetting MFA, recovery-code sign-in and regeneration, changing the policy, and promotion.
 
 ## Invitations
 

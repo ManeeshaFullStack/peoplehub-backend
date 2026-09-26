@@ -24,7 +24,8 @@ import org.springframework.stereotype.Component;
  *       answer 401 (and 403).
  *   <li>Login, refresh, logout, forgot password and reset password document their own 401/403
  *       answers.
- *   <li>The sessions and deactivation endpoints (b2-6) also document their 400/403/404/409 answers.
+ *   <li>The sessions and deactivation endpoints (b2-6) and MFA enrollment (b2-7) also document
+ *       their 400/403/404/409 answers.
  * </ul>
  *
  * Driven by the same list as the security chain, so the document cannot say an endpoint is public
@@ -75,7 +76,18 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                     Map.of(
                             "403", "The caller may not reactivate this employee.",
                             "404", "No such employee in the caller's organization.",
-                            "409", "Only a deactivated employee can be reactivated."));
+                            "409", "Only a deactivated employee can be reactivated."),
+                    "/api/v1/me/mfa/enroll",
+                    Map.of(
+                            "409",
+                            "The organization does not offer MFA, or the caller already has it."),
+                    "/api/v1/me/mfa/confirm",
+                    Map.of(
+                            "400",
+                            "The code is missing, malformed or incorrect.",
+                            "409",
+                            "Nothing to confirm: MFA is not offered, already enabled, or not"
+                                    + " started."));
 
     @Override
     public void customise(OpenAPI openApi) {
