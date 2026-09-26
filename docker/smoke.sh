@@ -259,11 +259,7 @@ expect_equals "neither application role is a superuser" 0 "$superusers"
 connected_as="$(psql_admin "select string_agg(distinct usename, ',') from pg_stat_activity where datname = '$DB_NAME' and usename in ('$OWNER_ROLE','$RUNTIME_ROLE')")"
 expect_equals "the application connects as the runtime role only" "$RUNTIME_ROLE" "$connected_as"
 
-expect_equals "the runtime role can read the audit log" 0 "$(psql_as "$RUNTIME_ROLE" "$RUNTIME_PASSWORD" "select count(*) from audit_log")"
-for statement in "update audit_log set action = 'X'" "delete from audit_log" "truncate audit_log"; do
-    expect_contains "runtime role, \"$statement\": denied" "permission denied for table audit_log" \
-        "$(psql_as "$RUNTIME_ROLE" "$RUNTIME_PASSWORD" "$statement")"
-done
+# The runtime role's own audit-log checks need a tenant (V25), so they run once the smoke organization exists, below.
 for statement in "update audit_log set action = 'X'" "delete from audit_log" "truncate audit_log"; do
     expect_contains "owner role, \"$statement\": rejected by the trigger" "audit_log is append-only" \
         "$(psql_as "$OWNER_ROLE" "$OWNER_PASSWORD" "$statement")"
@@ -272,7 +268,7 @@ done
 # ---------------------------------------------------------------------------------------------------------------------
 # The integration tests run the application as the database superuser; here it runs as the least-privileged runtime
 # role, so this proves its grants cover the password flows: the row locks, the lockout counters, the reset rows, session
-# revocation and the audit rows. Runs after the "runtime role can read the audit log" check, which expects no rows.
+# revocation and the audit rows.
 section "Password reset, lockout and change as the runtime role (b2-5)"
 api() { curl -sS -H 'Content-Type: application/json' "$@" 2>&1 || true; }
 # Only the status code. No `-o /dev/null`: with MSYS_NO_PATHCONV=1, curl on Windows cannot open it, so the body and
@@ -291,6 +287,23 @@ smoke_org="$(psql_admin "with o as (insert into organization (name, login_key_no
 smoke_employee="$(psql_admin "with e as (insert into employee (organization_id, employee_code, name, email,
     email_normalized, status, role) values ('$smoke_org', 'SMOKE-1', 'Smoke Person', '$smoke_email', '$smoke_email',
     'ACTIVE', 'EMPLOYEE') returning id) select id from e")"
+
+# The runtime role under row-level security (b2-8, V25). Every tenant table is visible to the runtime role only inside a
+# transaction bound to an organization, as the application binds it; without one, reading fails loudly rather than
+# answering empty. The audit-log checks therefore run bound to the smoke organization, which has no audit row yet, so
+# what they test is the grant: SELECT allowed, UPDATE/DELETE/TRUNCATE refused (B0-6/2, B0-6/4).
+psql_as_tenant() {
+    psql_as "$1" "$2" "begin; select set_config('peoplehub.organization_id', '$3', true); $4"
+}
+expect_contains "runtime role without a tenant: a tenant table cannot be read" "No tenant is bound" \
+    "$(psql_as "$RUNTIME_ROLE" "$RUNTIME_PASSWORD" "select count(*) from employee")"
+expect_equals "the runtime role can read the audit log" 0 \
+    "$(psql_as_tenant "$RUNTIME_ROLE" "$RUNTIME_PASSWORD" "$smoke_org" "select count(*) from audit_log" | tail -n 1)"
+for statement in "update audit_log set action = 'X'" "delete from audit_log" "truncate audit_log"; do
+    expect_contains "runtime role, \"$statement\": denied" "permission denied for table audit_log" \
+        "$(psql_as_tenant "$RUNTIME_ROLE" "$RUNTIME_PASSWORD" "$smoke_org" "$statement")"
+done
+
 login_body() { printf '{"organization":"%s","email":"%s","password":"%s"}' "$smoke_key" "$smoke_email" "$1"; }
 failed_logins() { psql_admin "select failed_login_count from employee where id = '$smoke_employee'"; }
 
