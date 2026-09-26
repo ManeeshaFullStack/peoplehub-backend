@@ -193,7 +193,7 @@ After verification, the founder completes a short setup flow using the real orga
 - Security: choose the organization's MFA policy (default `DISABLED`, 8.3), unless the policy is `DISABLED` optionally enroll the founder's own MFA, and review security defaults.
 - Team: optional invitation of the first Admin/employees.
 
-Completing setup routes to the standard Super Admin dashboard. There is no permanently separate “setup dashboard.”
+Completing setup (`POST /api/v1/organization/onboarding/complete`, Super Admin only, idempotent, audited) routes to the standard Super Admin dashboard. There is no permanently separate “setup dashboard.”
 
 ### 2.1.5 Invitation model
 There is **no public Employee/Admin registration**.
@@ -286,7 +286,7 @@ Name-only groupings (no nesting). Each employee belongs to **at most one** depar
 - **Deactivate Admin:** reversible; blocks login; revokes all sessions and tokens; reassigns their pending approvals (7.2).
 - **Reactivate:** restores prior access exactly as it was; MFA still applies.
 - **Delete Admin (irreversible):** the employee row becomes a **tombstone**: name/email/phone/password/MFA/devices destroyed, email freed for reuse, display name becomes "Former employee #id". Attendance, leave and audit rows are **retained** and point to the tombstone; they never carry to a re-onboarded account. Requires step-up auth (8.3) and a typed confirmation.
-- **Last Super Admin protection:** the last active Super Admin cannot be deleted, deactivated or demoted. A Super Admin cannot delete or deactivate themselves. Ownership transfer is an explicit flow. The system warns until 2 or more Super Admins exist.
+- **Last Super Admin protection:** the last active Super Admin cannot be deleted, deactivated or demoted. A Super Admin cannot delete or deactivate themselves. Ownership transfer is an explicit flow. The system warns until 2 or more active Super Admins exist (`needsAdditionalSuperAdmin` in `GET /api/v1/me`, informational only; 8.3).
 - **Break-glass recovery:** documented CLI/runbook procedure (needs server access) to restore a Super Admin if all are locked out; the action is audit-logged.
 
 
@@ -572,9 +572,16 @@ The count backing both dashboard taglines (5.6, D19) is a single read query — 
   - `REQUIRED_FOR_SELECTED_USERS`: covers the users a Super Admin selects. Other users are not covered.
   - `REQUIRED_FOR_ALL`: covers every user.
 - Under a `REQUIRED_*` policy, enforcement applies only to the users the policy covers: a covered user who has not enrolled receives no session until MFA enrollment is completed. Users the policy does not cover are treated as under `OPTIONAL`.
-- A user who has enrolled is always challenged at sign-in, whatever the policy; changing the policy to `DISABLED` does not remove an existing enrollment.
-- MFA reset only by an authorised role (Employee→Admin/Super Admin; Admin→Super Admin), audited, and it forces re-enrolment when the policy requires MFA for that user.
-- **Step-up auth** (fresh password, plus a TOTP or recovery code when the user has MFA enrolled, within 5 minutes) for: delete Admin, promote/demote roles, bulk import, unlock month, MFA reset, export of the full org, changing security settings.
+- A user who has enrolled is always challenged at sign-in, whatever the policy; changing the policy to `DISABLED` does not remove an existing enrollment. Founder registration and email verification never require MFA (2.1.3).
+- **Sign-in with MFA.** After a correct password, a user who has enrolled gets a `CHALLENGE` step and a covered user who has not enrolled gets an `ENROLL` step instead of a session (`POST /api/v1/auth/login` answers `{mfaRequired, challengeToken}`). The challenge token is single use, stored only as a hash, valid for 5 minutes (`CHALLENGE`) or 10 (`ENROLL`), and ends after 5 wrong codes; every wrong code also counts toward the per-account lockout. The session, the lockout reset and the `LOGIN_SUCCEEDED` audit row come only when the MFA step completes. The address of the password step is recorded, never compared.
+- **Changing who is required.** A policy change, or a Super Admin's selection of a user for `REQUIRED_FOR_SELECTED_USERS` (settable under any policy, effective only under that one), that newly requires MFA of users who have not enrolled ends all their sessions, with no grace period, so the requirement applies at their next sign-in. The acting Super Admin keeps their current session; if the change requires MFA of them, they must enroll before any step-up protected action. Selection changes are audited as `MFA_SELECTION_CHANGED`.
+- **Recovery codes.** Ten single-use codes, stored only as hashes. They are returned **once** by the call that enables MFA (`POST /api/v1/me/mfa/confirm`, or the enrollment step at sign-in) or regenerates them; there is **no server-side recovery-code acknowledgement** endpoint or state (a frontend may ask the user to confirm locally). Replaced or reset codes are invalidated, never deleted. Regenerating them is step-up protected.
+- **Re-enrollment** (a new authenticator for a user already enrolled) is step-up protected. The new secret waits in a separate pending field (`employee.mfa_totp_pending_secret`, migration V23) while the existing secret and recovery codes keep working; abandoning or failing it changes nothing. Confirming it with the new app's code replaces the secret and every recovery code in one transaction.
+- **Disabling one's own MFA** is step-up protected and refused while the policy requires MFA for that user.
+- **MFA reset** of another person, step-up protected and audited: an Admin may reset an Employee's MFA; a Super Admin may reset an Admin's or an Employee's. **Nobody resets a Super Admin's MFA or their own**: a Super Admin who has lost their factor uses a recovery code or the break-glass procedure (3.3). A reset clears the secret and the recovery codes, ends any open sign-in challenge and every session of that person, and forces re-enrollment at the next sign-in when the policy requires MFA for that user.
+- **Step-up auth** (fresh password, plus a TOTP or recovery code when the user has MFA enrolled, within 5 minutes) for: delete Admin, promote/demote roles, bulk import, unlock month, MFA reset, export of the full org, changing security settings (including the MFA policy and the selection of users), and a user's own MFA re-enrollment, disabling and recovery-code regeneration. A step-up is bound to the session that performed it and authorizes no other session; once the user has MFA enabled, a password-only step-up no longer counts. A user the policy requires to have MFA who has not enrolled must enroll before stepping up.
+- **Reminders.** A user who may enroll but is not required gets a server-decided, never-blocking reminder, which they can dismiss for a server-side interval.
+- **Too few Super Admins (3.3).** `GET /api/v1/me` returns `needsAdditionalSuperAdmin`: true only for a Super Admin whose organization has fewer than two **active** Super Admins. It is informational only: it exposes no count and blocks neither onboarding completion, sign-in nor workspace access.
 
 ### 8.4 Presence (unchanged in spirit)
 Presence is purely cosmetic and never drives attendance or auth: heartbeat only while the tab is visible/focused, **minimum 10-minute grace** before "away", multiple tabs may heartbeat independently. Feeds the Admin "who's online" widget and the Active/Idle split in the Live Attendance Dashboard (5.5) — it never changes an employee's actual hours.
@@ -713,7 +720,7 @@ New route family:
 - `/activate/set-password`
 - `/auth/mfa/setup`
 - `/auth/mfa/challenge`
-- `/auth/recovery-codes`
+- `/auth/recovery-codes` (shows the codes the enrollment call returned once; any "I have saved them" confirmation is client-side only, 8.3)
 - `/welcome`
 
 Invite screen clearly shows the inviting organization and intended role. The invitee sets their own password. Invitees complete MFA enrollment before dashboard access only when the organization's MFA policy requires it for them (8.3). Expired/used/revoked tokens get a polished safe state with a resend/contact-admin path; errors never leak unrelated tenant data.
@@ -767,9 +774,9 @@ Every major page must define: loading skeleton, empty state, field validation, s
 ## 12. Data Model
 
 **Org & people**
-- `organization`: name, settings (Section 11), leave-policy version
+- `organization`: name, settings (Section 11), leave-policy version, **mfa_policy** (`DISABLED` / `OPTIONAL` / `REQUIRED_FOR_ADMINS` / `REQUIRED_FOR_SELECTED_USERS` / `REQUIRED_FOR_ALL`, default `DISABLED`; 8.3)
 - `department`: id, org_id, name (unique per org), description (nullable), created_by, created_at
-- `employee`: id, org_id, department_id (nullable, single membership), employee_code, name, email, password_hash, status (INVITED / ACTIVE / DEACTIVATED / DELETED_TOMBSTONE), role, default_approver_id, mfa_enabled, **join_date, exit_date**, **welcome_seen_at** (nullable timestamp, 10.2)
+- `employee`: id, org_id, department_id (nullable, single membership), employee_code, name, email, password_hash, status (INVITED / ACTIVE / DEACTIVATED / DELETED_TOMBSTONE), role, default_approver_id, mfa_enabled, **join_date, exit_date**, **welcome_seen_at** (nullable timestamp, 10.2); MFA state (8.3): mfa_totp_secret (encrypted, bound to the account), **mfa_required** (the Super Admin's selection for `REQUIRED_FOR_SELECTED_USERS`), **mfa_enrolled_at**, **mfa_totp_last_step** (replay protection), **mfa_reminder_dismissed_at**, **mfa_totp_pending_secret** (migration V23: the encrypted new secret of a re-enrollment, kept apart so the existing secret and recovery codes keep working until the new authenticator is confirmed; only while MFA is enabled)
 - `calendar_event`: id, org_id, date, end_date (nullable, for multi-day entries), start_time / end_time (nullable), type (HOLIDAY / EVENT), name, description (nullable), location (nullable), mandatory (bool, `HOLIDAY` only), created_by, updated_by, created_at, updated_at — **replaces v4's `holiday` table**; only `type = HOLIDAY` rows feed `attendance_day`/leave-day math (4.3, 6.6)
 
 **Attendance**
@@ -797,7 +804,9 @@ Every major page must define: loading skeleton, empty state, field validation, s
 - `audit_log` (append-only; DB role cannot UPDATE/DELETE): id, actor_id, action, target_type, target_id, timestamp, ip, details (before/after)
 - `refresh_token`: id, employee_id, token_hash, family_id, created_at, expires_at, absolute_expires_at, revoked, device/user-agent label
 - `login_attempt`: id, email, ip, success, timestamp
-- `mfa_recovery_code`: employee_id, code_hash, used_at
+- `mfa_recovery_code`: **organization_id**, employee_id, code_hash, used_at, **invalidated_at** (replaced or reset codes; never deleted)
+- `mfa_challenge`: id, organization_id, employee_id, token_hash, purpose (CHALLENGE / ENROLL), device_label, ip (recorded, never compared), expires_at, failed_attempts, consumed_at, invalidated_at, created_at — the MFA step between a correct password and a session (8.3); single use, never deleted
+- `session_step_up`: id, organization_id, employee_id, session_id (the refresh-token family), method (PASSWORD / PASSWORD_AND_TOTP / PASSWORD_AND_RECOVERY_CODE), verified_at (database time; fresh for 5 minutes) — insert-only (8.3)
 - `notification`: id, employee_id, type, payload, read, created_at
 - `notification_preference`: employee_id, type, email, in_app
 - `email_outbox` / `email_send_log`: id, recipient, type, payload, status, attempts, next_attempt_at, provider_message_id, error, last_attempt_at
@@ -808,11 +817,11 @@ Every major page must define: loading skeleton, empty state, field validation, s
 
 ### 12.1 v9 tenant/auth additions
 At minimum, extend the schema with:
-- `organization(id, name, login_key_normalized UNIQUE, timezone, status, onboarding_completed_at, created_at, updated_at, ...)`
+- `organization(id, name, login_key_normalized UNIQUE, timezone, status, onboarding_completed_at, mfa_policy, created_at, updated_at, ...)`
 - Employee/Auth identity includes `organization_id NOT NULL`, `role`, `status`, `email_normalized`, verification timestamps and activation state.
 - Uniqueness for employee email is tenant-scoped unless product policy later requires global uniqueness: `UNIQUE(organization_id, email_normalized)`.
 - Invitation includes `organization_id`, target email, intended role, token hash, expiry, consumed/revoked timestamps, inviter id.
-- Verification/reset/MFA/session records are tenant/account bound.
+- Verification/reset/MFA/session records are tenant/account bound (`mfa_recovery_code`, `mfa_challenge` and `session_step_up` carry `organization_id` with a composite foreign key to the employee).
 - Tenant-owned tables use tenant-safe foreign keys/constraints. Where practical use composite uniqueness/foreign keys including `organization_id` to make accidental cross-tenant references invalid at the database layer.
 - Cache keys begin with `org:{organizationId}:...`; SSE channels/topics are tenant-scoped; export/background-job payloads carry tenant id explicitly.
 - Audit rows include `organization_id`, actor id, action, target type/id, correlation id and immutable before/after metadata as applicable.
@@ -824,17 +833,27 @@ Public/non-authenticated:
 - `POST /api/v1/public/organizations/register` — atomically create organization + founding Super Admin in pending-verification state.
 - `POST /api/v1/public/organizations/verify-email` — consume founder verification token.
 - `POST /api/v1/public/organizations/resend-verification` — non-enumerating, rate-limited.
-- `POST /api/v1/auth/login` — Organization + email + password; no role input.
-- `POST /api/v1/auth/mfa/challenge`
+- `POST /api/v1/auth/login` — Organization + email + password; no role input. Answers a session, or, when MFA is part of this sign-in, `{mfaRequired: CHALLENGE | ENROLL, challengeToken}` and no session (8.3).
+- `POST /api/v1/auth/mfa/challenge` — challenge token plus a TOTP code or a recovery code; opens the session.
+- `POST /api/v1/auth/mfa/enroll` — challenge token of an `ENROLL` step; returns a new TOTP secret once.
+- `POST /api/v1/auth/mfa/enroll/confirm` — challenge token plus a TOTP code; enables MFA, opens the session and returns the recovery codes once.
 - `POST /api/v1/auth/forgot-password` — Organization + email; always-same public response.
 - `POST /api/v1/auth/reset-password`
 - `GET /api/v1/public/invitations/{token}/preview` — returns only safe invitation context for that token.
 - `POST /api/v1/public/invitations/{token}/accept` — set invitee password; cannot change org/role.
 
 Authenticated:
-- `POST /api/v1/me/mfa/enroll`, `POST /api/v1/me/mfa/confirm`, recovery-code acknowledgement.
-- `GET /api/v1/me` includes organization display data, role, firstName, onboarding state.
-- `PATCH /api/v1/organization/onboarding` / completion endpoint for founder setup.
+- `POST /api/v1/me/mfa/enroll` — a new TOTP secret, returned once (re-enrollment while enrolled: step-up; the secret waits as pending until confirmed).
+- `POST /api/v1/me/mfa/confirm` — a TOTP code of the new secret; enables MFA (or completes a re-enrollment) and returns the recovery codes **once**. There is no recovery-code acknowledgement endpoint or state.
+- `POST /api/v1/me/step-up` — password, plus a TOTP or recovery code when MFA is enabled; fresh for 5 minutes for this session only.
+- `POST /api/v1/me/mfa/disable` — step-up; refused while the policy requires MFA for the caller.
+- `POST /api/v1/me/mfa/recovery-codes/regenerate` — step-up; returns ten new codes once.
+- `POST /api/v1/me/mfa/reminder/dismiss` — hides the MFA reminder for the server-side interval.
+- `PUT /api/v1/organization/security/mfa-policy` — Super Admin, step-up; audited.
+- `PUT /api/v1/super-admin/employees/{id}/mfa-required` — Super Admin, step-up; selection for `REQUIRED_FOR_SELECTED_USERS`; audited as `MFA_SELECTION_CHANGED`.
+- `POST /api/v1/admin/employees/{id}/mfa/reset` — step-up; an Admin resets an Employee's MFA, a Super Admin an Admin's or an Employee's; never a Super Admin's or one's own.
+- `GET /api/v1/me` includes organization display data, role, firstName, onboarding state, the caller's MFA state (`mfa: {enabled, required, policy, showReminder}`) and `needsAdditionalSuperAdmin` (8.3).
+- `POST /api/v1/organization/onboarding/complete` — founder setup completion; Super Admin only, idempotent, audited.
 - `POST /api/v1/admin/employees/invite` — Admin/Super Admin, tenant-local Employee invitation.
 - `POST /api/v1/super-admin/admins/invite` — Super Admin direct Admin invitation.
 - `POST /api/v1/super-admin/employees/{id}/promote-admin` — existing Employee promotion; step-up.

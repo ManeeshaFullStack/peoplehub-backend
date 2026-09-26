@@ -30,12 +30,14 @@ Persistent engineering rules for Claude in this repository. This file is a **con
 - **Multi-organization HR operations SaaS backend** (v9, D21): one deployment can host many organizations, and each one
   behaves as a completely private workspace (hard tenant isolation; see "v9 adoption" below). Scope: attendance
   (server-authoritative sessions), leave, approvals, org/departments, calendar, notifications, reports, audit.
-  Standalone (own auth/org/data). **Built so far in B2 (b2-1 to b2-6):** the organization/tenant/employee schema,
+  Standalone (own auth/org/data). **Built so far in B2 (b2-1 to b2-7):** the organization/tenant/employee schema,
   organization registration with founder email verification, password login with JWT, rotating refresh tokens and the
   tenant context, invitation-only membership (Employee and direct Admin invitations, activation, the welcome state),
   the password policy with a breached-password check, per-account lockout, forgot/reset and change password, and the
-  sessions list with session revocation and coarse device labels, and employee deactivation/reactivation.
-  **Not built yet:** MFA and database-level tenant isolation (RLS) arrive in b2-7 and b2-8.
+  sessions list with session revocation and coarse device labels, and employee deactivation/reactivation; and (b2-7)
+  the organization MFA policy, TOTP enrollment and sign-in challenge, recovery codes, step-up authentication, MFA
+  reset, Employee → Admin promotion and founder onboarding completion.
+  **Not built yet:** database-level tenant isolation (RLS) and the cross-tenant security suite arrive in b2-8.
 - **Stack:** Java 21, Spring Boot (modular monolith, **package-by-feature**), PostgreSQL (`timestamptz` everywhere,
   `btree_gist`), Flyway (forward-only), Redis (refresh-token families, rate limiting, presence, Spring Cache),
   Jakarta Validation, Logback JSON + MDC, `@Scheduled` + ShedLock, provider-agnostic `EmailService` + transactional
@@ -63,11 +65,12 @@ Persistent engineering rules for Claude in this repository. This file is a **con
   foundation, templates/retry/sending, in-app notifications + SSE, bounce/complaint suppression;
   PRs #11, #12, #13, #15). **B1 (Email & notification platform) complete.** See §13 for the
   branch-by-branch detail.
-- **B2 status:** b2-1, b2-2, b2-3, b2-4, b2-5 and b2-6 are merged (organization/tenant/employee schema V8-V12, PR #17;
-  organization registration and founder verification V13, PR #20; password login, JWT and refresh-token rotation V14,
-  PR #23; invitations, activation and the welcome state V15, PR #26; password policy, lockout and reset V16-V17,
-  PR #29; sessions, session revocation and deactivation V18, PR #32). **Next: `b2-7-mfa-stepup-onboarding`.** B2 is not
-  complete (b2-7 and b2-8 remain). See §13 for the branch-by-branch detail.
+- **B2 status:** b2-1, b2-2, b2-3, b2-4, b2-5, b2-6 and b2-7 are merged (organization/tenant/employee schema V8-V12,
+  PR #17; organization registration and founder verification V13, PR #20; password login, JWT and refresh-token
+  rotation V14, PR #23; invitations, activation and the welcome state V15, PR #26; password policy, lockout and reset
+  V16-V17, PR #29; sessions, session revocation and deactivation V18, PR #32; the MFA spec correction, PR #35; MFA,
+  step-up, promotion and onboarding V19-V23, PR #36). **Next: `b2-8-tenant-isolation-security-tests`.** B2 is not
+  complete (b2-8 remains). See §13 for the branch-by-branch detail.
 - **Queued follow-ups (not yet scheduled):** (1) CI guard that fails when an already-merged migration file under
   `db/migration/` is modified or deleted (§16.2 "never edit an applied migration"); (2) gitleaks pre-commit hook
   (§15 item 12); (3) SAST, dependency scan, SBOM, **and the OpenAPI snapshot + breaking-change check** (§16.2) before B0
@@ -140,9 +143,9 @@ must not be pulled into B0. The requirements to design towards:
 - **Registration / bootstrap (D23, D29, §2.1.3):** only an organization **founder** self-registers (public
   `/register`). Organization + founder are created atomically; the founder is an individual (own company email and
   private password, no shared "superadmin" credentials) and becomes the first `SUPER_ADMIN`. Flow: email verification ->
-  first-time organization setup -> the real Super Admin dashboard. **MFA is not a mandatory bootstrap step** (owner
-  decision MFA/1, "MFA policy decisions" below; spec §2.1.3 step 6 still says mandatory, §15 item 15). No normal
-  session exists before verification; responses are non-enumerating.
+  first-time organization setup -> the real Super Admin dashboard. **MFA is not a bootstrap step** (owner decision
+  MFA/1, "MFA policy decisions" below; the spec was corrected to match by PR #35, §15 item 15). No normal session exists
+  before verification; responses are non-enumerating.
 - **Invitation-only membership (D24, D25, §2.1.5, §3.3):** Employees and additional Admins never sign up publicly. They
   arrive by single-use, expiring email invitations and set their own passwords privately. A Super Admin may promote an
   existing active Employee (step-up protected) **or** invite a new person directly as `ADMIN`. An Admin or Super Admin
@@ -150,11 +153,10 @@ must not be pulled into B0. The requirements to design towards:
 - **Login (D27, §2.1.6, §8.2):** every role uses **Organization + company email + password**; there is no role
   selector. The server resolves the tenant, authenticates inside it, then routes by the stored role. Failure is one
   generic message with timing and rate-limit protection.
-- **MFA (owner-approved implementation decision, 2026-09-23; see "MFA policy decisions" below and §15 item 15.
-  `PROJECT_MASTER_SPEC.md` currently contains mandatory MFA requirements and must be updated through a future spec
-  PR before B2-7 starts):** a configurable, organization-level security feature, **disabled by default** after
-  organization creation. Whether MFA is required, and for whom, is the organization's MFA policy, chosen by a Super
-  Admin. Built in `b2-7`, not before.
+- **MFA (owner-approved decision, 2026-09-23; see "MFA policy decisions" and "B2-7 decisions" below; the spec's
+  former mandatory-MFA text was corrected by PR #35, §15 item 15):** a configurable, organization-level security
+  feature, **disabled by default** after organization creation. Whether MFA is required, and for whom, is the
+  organization's MFA policy, chosen by a Super Admin; anyone enrolled is always challenged. **Built in `b2-7` (PR #36).**
 - **Deactivation (D26, §2.1.7):** immediately blocks login, refresh, API and SSE access, revokes refresh-token families
   and sessions and device authorization, reassigns pending approvals and closes an open session (`DEACTIVATION`), while
   preserving attendance, leave, approval and audit history. Normal exit is deactivation, not hard delete; D7 tombstoning
@@ -226,11 +228,10 @@ Cite as "B2-2/4" and so on (never a bare `D#`, which is the spec's). Scope: `b2-
 
 ### MFA policy decisions (owner-approved 2026-09-23; recorded here so they survive a session or repo reset)
 
-Cite as "MFA/3" and so on (never a bare `D#`, which is the spec's). **Owner-approved implementation decision.
-`PROJECT_MASTER_SPEC.md` currently contains mandatory MFA requirements and must be updated through a future spec PR
-before B2-7 starts.** The affected spec text is D6 ("MFA is mandatory for Admin and Super Admin") and the MFA steps of
-§2.1.3 (step 6), §2.1.5, §3.3, §8.2, §8.3, §15 item 5 and §22.1. The spec is **not** edited here; the conflict is
-recorded as §15 item 15.
+Cite as "MFA/3" and so on (never a bare `D#`, which is the spec's). **Owner-approved decision.** The spec's former
+mandatory-MFA text (D6 "MFA is mandatory for Admin and Super Admin" and the MFA steps of §2.1.3 step 6, §2.1.5, §3.3,
+§8.2, §8.3, §15 item 5 and §22.1) was corrected to this policy model by PR #35 before `b2-7` started (§15 item 15,
+resolved). Implemented and merged in `b2-7` (PR #36); the details are "B2-7 decisions" below.
 
 - **MFA/1 — MFA is a future, configurable security feature, not a login prerequisite.** No role is forced through MFA
   enrollment by default: not the founder, not a directly invited Admin, not a promoted Admin. MFA gates login only
@@ -259,10 +260,10 @@ recorded as §15 item 15.
 - **MFA/7 — Reminders encourage, never block.** Security reminders encourage users (and Super Admins, for the
   organization policy) to enable MFA, but **never block login unless the organization's policy requires MFA for that
   user**.
-- **Open for `b2-7` (not decided here):** how step-up authentication (spec §8.3: "fresh password/MFA within 5
-  minutes") works for a user with no MFA enrolled (password-only re-authentication is the likely reading); whether
-  changing the organization MFA policy itself needs step-up; the enforcement behaviour when a policy change makes MFA
-  required for a user who is already signed in; and who may reset another user's MFA.
+- **Formerly open for `b2-7`, now decided:** step-up for a user with no MFA enrolled is the password alone, unless
+  the policy requires MFA of them, when they enroll first (B2-7/15); changing the policy needs step-up (B2-7/3); a
+  policy change that newly requires MFA ends the sessions of those not enrolled, with no grace period (B2-7/3); who may
+  reset another user's MFA is B2-7/12.
 
 ### B2-3 decisions (owner-approved 2026-09-23; recorded here so they survive a session or repo reset)
 
@@ -612,14 +613,13 @@ CRUD and the directory and reuses them.
 
 Cite as "B2-7/4" and so on (never a bare `D#`, which is the spec's). Scope: `feature/b2-7-mfa-stepup-onboarding` — the
 organization MFA policy, TOTP enrollment and sign-in challenge, recovery codes, MFA reset, step-up authentication,
-Employee → Admin promotion, and the founder's onboarding completion. Not yet implemented; this locks the design before
-coding. Builds on the owner's "MFA policy decisions" (MFA/1-MFA/7), which take precedence over the spec's mandatory-MFA
-text. Spec basis: D6 (as amended by MFA/1-MFA/7), D25, §2.1.3, §2.1.4, §2.1.5, §3.2, §3.3, §8.2, §8.3, §11, §13.0,
-§15.1, §22.1.
+Employee → Admin promotion, and the founder's onboarding completion. **Implemented and merged (PR #36, checkpoints
+C1-C7).** Builds on the owner's "MFA policy decisions" (MFA/1-MFA/7). Spec basis: D6 (as amended), D25, §2.1.3,
+§2.1.4, §2.1.5, §3.2, §3.3, §8.2, §8.3, §11, §12, §12.1, §13.0, §15.1, §22.1. The implementation-time decisions that
+refine this block are "B2-7 implementation decisions" below.
 
-**Gate before coding:** the spec's mandatory-MFA text (§15 item 15: D6, §2.1.3 step 6, §2.1.5, §3.3, §8.2, §8.3, §11
-`mfa_required_roles`, §15 item 5, §22.1) is corrected through its own `docs:` spec PR, merged, before the `b2-7`
-implementation branch is created (MFA/"Owner-approved implementation decision"). This decisions block does not need it.
+**Gate before coding (met):** the spec's mandatory-MFA text was corrected by its own `docs:` spec PR (PR #35), merged
+before the implementation branch was created (§15 item 15).
 
 **MFA policy and who needs MFA**
 
@@ -654,7 +654,7 @@ implementation branch is created (MFA/"Owner-approved implementation decision").
 **Enrollment**
 
 - **B2-7/4 — When enrollment happens.**
-  - *Voluntarily*, any time the policy is not `DISABLED`: `POST /me/mfa/enrol` then `POST /me/mfa/confirm` from a
+  - *Voluntarily*, any time the policy is not `DISABLED`: `POST /me/mfa/enroll` then `POST /me/mfa/confirm` from a
     signed-in session. This is also how someone the policy requires to have MFA enrolls before an MFA-protected action
     (B2-7/15).
   - *Required at sign-in*: when the policy requires MFA for someone not enrolled, the password step creates no
@@ -670,11 +670,11 @@ implementation branch is created (MFA/"Owner-approved implementation decision").
   convention). A code's time step is remembered (`employee.mfa_totp_last_step`), so the same code cannot be used twice.
   The backend returns an `otpauth://` URI and the frontend draws the QR code. WebAuthn/passkeys, SMS and email codes
   are not built (deferred, see the end of this block).
-- **B2-7/6 — Enrollment flow.** `enrol` generates a new 160-bit secret, stores it encrypted with `mfa_enabled = false`
+- **B2-7/6 — Enrollment flow.** `enroll` generates a new 160-bit secret, stores it encrypted with `mfa_enabled = false`
   (pending), and returns the secret and URI once. `confirm` with a valid code sets `mfa_enabled = true`, records
   `mfa_enrolled_at`, creates 10 recovery codes and returns them once (B2-7/8). Enrolling again while enrolled needs
-  step-up and replaces the secret and every recovery code. An unconfirmed pending secret is simply overwritten by the
-  next `enrol`.
+  step-up and replaces the secret and every recovery code; the new secret waits in `mfa_totp_pending_secret` (V23)
+  until confirmed (B2-7/I9). An unconfirmed pending secret is simply overwritten by the next `enroll`.
 - **B2-7/7 — Secret storage: AES-256-GCM, never raw.** The secret is encrypted in the application with a key from
   the environment (`PEOPLEHUB_MFA_ENCRYPTION_KEY`, 32 bytes base64, with a key id for rotation,
   `PEOPLEHUB_MFA_ENCRYPTION_KEY_ID`, plus previous keys for decryption only, the JWT key pattern B2-3/2). Each value is
@@ -698,7 +698,7 @@ implementation branch is created (MFA/"Owner-approved implementation decision").
   `mfa_challenge` table (organization, employee, purpose, expiry 5 minutes for a challenge and 10 for enrollment,
   consumed, attempts), single use, and bound to the device label and IP the password step saw.
   - `POST /auth/mfa/challenge {challengeToken, code | recoveryCode}` completes the sign-in and creates the session.
-  - `POST /auth/mfa/enrol` and `/auth/mfa/enrol/confirm {challengeToken, …}` run B2-7/6 for a required enrollment and
+  - `POST /auth/mfa/enroll` and `/auth/mfa/enroll/confirm {challengeToken, …}` run B2-7/6 for a required enrollment and
     then create the session.
   - Every failure of the password step is still the one generic 401 (B2-3/12); the MFA step only starts after a
     correct password, so its answers reveal nothing an attacker without the password could use.
@@ -787,8 +787,8 @@ implementation branch is created (MFA/"Owner-approved implementation decision").
   captured logs and whole response bodies, as in b2-5.
 - **B2-7/25 — Audit events:** `MFA_POLICY_CHANGED`, `MFA_ENROLLED`, `MFA_DISABLED`, `MFA_RESET`,
   `MFA_RECOVERY_CODE_USED`, `MFA_RECOVERY_CODES_REGENERATED`, `STEP_UP_VERIFIED`, `EMPLOYEE_PROMOTED`,
-  `ORGANIZATION_ONBOARDING_COMPLETED`, all with ids, counts and fixed values only. Successful sign-in stays
-  `LOGIN_SUCCEEDED`, written when the MFA step completes.
+  `ORGANIZATION_ONBOARDING_COMPLETED`, and (added during implementation, B2-7/I12) `MFA_SELECTION_CHANGED`, all with
+  ids, counts and fixed values only. Successful sign-in stays `LOGIN_SUCCEEDED`, written when the MFA step completes.
 - **B2-7/26 — Rate limiting** is still `b13-1`; until then challenges are limited per challenge (B2-7/10) and per
   account (lockout).
 
@@ -813,10 +813,12 @@ implementation branch is created (MFA/"Owner-approved implementation decision").
   - Enrolling ends eligibility; an MFA disable or reset (B2-7/12) makes the person eligible again under the same
     timing.
 
-**Planned migrations (details in the implementation plan):** `organization.mfa_policy`; `employee.mfa_required`,
-`mfa_enrolled_at`, `mfa_totp_last_step`, `mfa_reminder_dismissed_at`; `mfa_recovery_code.organization_id` with its
-composite foreign key; the `mfa_challenge` and `session_step_up` tables; revoke reasons `MFA_REQUIRED`, `MFA_RESET`,
-`ROLE_CHANGED`. Each with per-table runtime grants and the `RuntimePrivilegesTest` inventory.
+**Migrations (as built):** `V19` `organization.mfa_policy`, `employee.mfa_required`, `mfa_enrolled_at`,
+`mfa_totp_last_step`, `mfa_reminder_dismissed_at`, the `employee.role` UPDATE grant and the revoke reasons
+`MFA_REQUIRED`, `MFA_RESET`, `ROLE_CHANGED`; `V20` `mfa_recovery_code.organization_id` with its composite foreign key
+and `invalidated_at`; `V21` `mfa_challenge`; `V22` `session_step_up`; `V23` `employee.mfa_totp_pending_secret` (not in
+the original plan, owner-approved in C5, B2-7/I9). Each with per-table runtime grants and the `RuntimePrivilegesTest`
+inventory.
 
 **Deferred, not built in `b2-7`:** WebAuthn/passkeys; SMS or email codes (never planned); "remember this device"; a
 configurable grace period for newly required MFA; demotion and granting Super Admin, and ownership transfer
@@ -824,6 +826,90 @@ configurable grace period for newly required MFA; demotion and granting Super Ad
 step-up actions in their own phases (B2-7/14); the security dashboard and MFA coverage reports; MFA notifications
 ("your MFA was reset", "new device enrolled"); request rate limiting (`b13-1`); RLS (`b2-8`); the frontend screens
 (F1).
+
+### B2-7 implementation decisions (owner-approved 2026-09-25 and 2026-09-26, checkpoints C1-C7; merged in PR #36)
+
+Cite as "B2-7/I4" and so on. These refine "B2-7 decisions" above where the implementation needed a choice; they do not
+change it. Code: `mfa` (policy, TOTP, secret encryption, recovery codes, challenges, verifier, step-up state,
+enrollment, self-service), `mfa.admin` (policy, selection, reset), `auth` (login MFA step, `MfaSignInService`,
+`StepUpService`), `employee` (promotion), `organization` (onboarding completion), `profile` (`/me`).
+
+**Endpoints and spelling**
+
+- **B2-7/I1 — Endpoints as built** (spec §13.0, synchronized by the B2-7 docs PR): public `POST /auth/mfa/challenge`,
+  `/auth/mfa/enroll`, `/auth/mfa/enroll/confirm`; authenticated `POST /me/mfa/enroll`, `/me/mfa/confirm`,
+  `/me/step-up`, `/me/mfa/disable`, `/me/mfa/recovery-codes/regenerate`, `/me/mfa/reminder/dismiss`,
+  `PUT /organization/security/mfa-policy`, `PUT /super-admin/employees/{id}/mfa-required`,
+  `POST /admin/employees/{id}/mfa/reset`, `POST /super-admin/employees/{id}/promote-admin`,
+  `POST /organization/onboarding/complete`. API paths spell **enroll** (never "enrol").
+- **B2-7/I2 — No recovery-code acknowledgement.** The recovery codes are returned once by the call that enables MFA or
+  regenerates them; there is no acknowledgement endpoint and no acknowledgement column. Any "I have saved them"
+  confirmation is client-side (F1). (The spec's former §13.0 "recovery-code acknowledgement" was a leftover of the old
+  mandatory-MFA gate; §15 item 16.)
+
+**Voluntary enrollment (C3)**
+
+- **B2-7/I3** — A wrong confirmation code from a signed-in session is a plain 400 and does not count toward the lockout
+  (the caller already holds the secret). The authenticator label is the email plus the organization login key.
+  Dismissing the reminder always records the latest time.
+
+**Sign-in challenge (C4)**
+
+- **B2-7/I4 — Answers.** A wrong code is a retryable 400 on `code` or `recoveryCode`; the fifth wrong code of a
+  challenge, and any unusable challenge (unknown, expired, used, wrong purpose, invalidated, account locked, not active,
+  MFA reset meanwhile), is one 401 "sign in again". A locked account's challenge is invalidated even with a right code.
+- **B2-7/I5 — Records.** `login_attempt` records the password step as a success even when an MFA step follows.
+  `LOGIN_SUCCEEDED` carries `mfaMethod` (`TOTP`, `RECOVERY_CODE`, `ENROLLED`) on MFA sign-ins. The failed sign-in count
+  clears only when the MFA step completes.
+- **B2-7/I6 — Challenges.** Lifetimes (5 and 10 minutes) and the limit of 5 are code constants. A new login does not end
+  an older open challenge. Device label and IP are recorded, never compared. Challenges are ended with
+  `invalidated_at`, never deleted. Deactivation does not touch open challenges (b2-6 unchanged): completion re-checks
+  the account; disable and reset invalidate them eagerly.
+- **B2-7/I7** — `POST /auth/login` returns `oneOf(TokenResponse, MfaChallengeResponse)`; the challenge answer has no
+  `expiresIn`. An `ENROLL` challenge may still enroll while the policy offers enrollment; under `DISABLED` it ends.
+
+**Step-up and self-service (C5)**
+
+- **B2-7/I8 — Step-up.** Freshness is decided on the database clock (`verified_at > now() - 5 minutes`), for the calling
+  session only. Once MFA is enabled a password-only step-up no longer counts. A step-up does not clear the failed
+  sign-in count; `STEP_UP_VERIFIED` records the method and `sessionId`. For a caller without MFA a supplied code is
+  ignored.
+- **B2-7/I9 — V23 `employee.mfa_totp_pending_secret`, for safe re-enrollment.** `mfa_totp_secret` holds the active
+  secret while enrolled, so a re-enrollment's new secret waits in the pending column (same AES-GCM format and account
+  binding, CHECK: only while `mfa_enabled`). The existing secret and recovery codes keep working until the new
+  authenticator is confirmed; restarting replaces only the pending secret; abandoning or failing changes nothing.
+  Confirming atomically promotes and clears it, renews `mfa_enrolled_at`, sets the replay step to the later of the old
+  step and the new code's, invalidates unused recovery codes and issues ten new ones (`MFA_ENROLLED`,
+  `reenrolled=true`). Confirming needs no second step-up. Re-enrollment is refused under `DISABLED`.
+- **B2-7/I10 — Order.** For disable and regenerate the state checks (409) come before the step-up check (403). Disable
+  also invalidates open sign-in challenges; the caller's sessions stay.
+
+**Administration (C6)**
+
+- **B2-7/I11 — Check order** follows b2-6 deactivation as implemented: the caller's role (403, before any lookup), the
+  target inside the caller's organization (404, same for unknown and foreign ids), who may act on whom (403), step-up,
+  then the target's state (409).
+- **B2-7/I12 — `MFA_SELECTION_CHANGED`** (not in the B2-7/25 list, added because the selection is a security setting):
+  written by `PUT /super-admin/employees/{id}/mfa-required` with the before/after change of `mfaRequired`,
+  `newlyRequired` and `revokedSessions`. Selection is allowed on oneself and on any status. Setting the current policy or
+  selection again is a silent 204 with no audit row.
+- **B2-7/I13 — Reset** exactly per B2-7/12 (owner re-confirmed 2026-09-26): an Admin resets Employees; a Super Admin
+  Admins and Employees; nobody a Super Admin's or their own. A target without enabled MFA is 409. Reset clears the
+  active and pending secrets, invalidates recovery codes and open challenges, and ends every session (`MFA_RESET`).
+- **B2-7/I14 — Locking.** A policy change locks the organization row, then every unenrolled employee of the organization
+  in id order, before reading role and selection, so a racing login or refresh cannot leave a session behind.
+  `revokedSessions` counts revoked refresh tokens (the b2-6 convention).
+
+**Onboarding and the Super Admin warning (C7)**
+
+- **B2-7/I15 — `POST /organization/onboarding/complete`**: Super Admin only (403), sets `onboarding_completed_at` once at
+  server time, audits `ORGANIZATION_ONBOARDING_COMPLETED` once, idempotent (204), no step-up.
+- **B2-7/I16 — `needsAdditionalSuperAdmin`** (B2-7/13): a top-level boolean in `GET /me`, true only for a Super Admin
+  whose organization has fewer than two `ACTIVE` Super Admins (counted in the caller's organization, from the token).
+  Informational only: never exposes the count, blocks neither onboarding completion, sign-in nor workspace access, and
+  reading it is not audited.
+- **B2-7/I17 — Secret scanning.** `TotpTest` carries the RFC 6238 test secret; `.gitleaksignore` holds its exact
+  fingerprint (commit `fee980f`), which must be updated if that commit is ever rewritten.
 
 ### B0-4 decisions (owner-approved 2026-09-21; recorded here so they survive a session or repo reset)
 
@@ -1115,6 +1201,11 @@ shared/production infrastructure is involved; or a Git action needs approval.
   caller-supplied department id (§3.1). Admin can never modify a Super Admin. **Nobody approves or edits their own
   leave/attendance (D9).** *From B2 (v9):* every tenant-owned lookup is tenant-qualified with the organization taken
   from the authenticated principal, and another tenant's id is "not found" (§2.1.2, §15.1); see "v9 adoption" in §2.
+- **MFA (b2-7):** `mfa` holds the policy model, TOTP, secret encryption, recovery codes, sign-in challenges, the
+  second-factor verifier, step-up state and self-service; `mfa.admin` holds the organization policy, selection and
+  reset; `auth` owns the login MFA step and `POST /me/step-up`. A future step-up protected action (spec §8.3) calls
+  `StepUps.requireFresh`; a future flow that ends a person's MFA calls `MfaChallenges.invalidateOpen` and the
+  recovery-code store. Secrets, codes and tokens never appear in a log, an audit row or a `toString()`.
 - **Time:** inject a `Clock`; never call `Instant.now()`/`LocalDate.now()` directly. Store UTC `timestamptz`; compute
   durations from instants in **seconds**; day boundaries use the **organization's timezone** (`organization.timezone`,
   §4.2, §11, §12.1). All time logic must be testable with a fixed/advancing clock.
@@ -1178,11 +1269,14 @@ shared/production infrastructure is involved; or a Git action needs approval.
   cookie, **reuse detection revokes the family**, sliding 30 d + absolute 90 d cap `[confirm]`; CSRF (double-submit +
   Origin) on refresh/logout; locked-down CORS.
 - MFA (TOTP authenticator apps, recovery codes) is an **organization-configurable policy, disabled by default**
-  (MFA/1–MFA/7 in §2; owner-approved implementation decision. `PROJECT_MASTER_SPEC.md` currently contains mandatory
-  MFA requirements and must be updated through a future spec PR before B2-7 starts; §15 item 15). When the
-  organization's policy requires MFA for a user, it is enforced at login; otherwise reminders encourage it but never
-  block login. Built in `b2-7`, not `b2-3`.
-  **Step-up auth** for the actions listed in §8.3 (its behaviour without MFA is decided in `b2-7`).
+  (MFA/1–MFA/7 and "B2-7 decisions" in §2; spec §8.3 matches since PR #35). It is never a registration step and never
+  globally mandatory. Anyone enrolled is always challenged at sign-in; when the organization's policy requires MFA for a
+  user who has not enrolled, they get no session until they enroll; otherwise reminders encourage it but never block.
+  Built in `b2-7` (PR #36).
+  **Step-up auth** for the actions listed in spec §8.3: fresh (5 minutes), bound to the calling session, password plus
+  a TOTP or recovery code once MFA is enabled, the password alone otherwise, enrollment first when the policy requires
+  MFA (B2-7/15). A new step-up protected action calls `StepUps.requireFresh(principal)` in its service; never invent
+  another mechanism.
 - *From B2 (v9):* login is **Organization + company email + password** for every role with **no role selector** and one
   generic failure message (D27); a deactivated user immediately loses login, refresh, API, SSE and device authority
   while history is preserved (D26); the tenant-isolation gates in spec §15.1 apply. See "v9 adoption" in §2.
@@ -1394,10 +1488,16 @@ policy/lockout, sessions, TOTP + step-up. Branches `b2-1-org-tenant-employee-sch
   concurrent deactivation never leaves a usable session; `REFRESH_TOKEN_REUSE_DETECTED` raised only for `ROTATED` and
   `LOGOUT` tokens; audit events `SESSION_REVOKED`, `OTHER_SESSIONS_REVOKED`, `EMPLOYEE_DEACTIVATED` and
   `EMPLOYEE_REACTIVATED`; race, tenant-isolation and runtime-role tests and `docker/smoke.sh` checks; a test-only fix
-  keeping the scheduled outbox job out of `EmailOutboxProcessorTest`; PR #32; decisions B2-6/1-B2-6/16). **Next: b2-7**
-  (MFA, step-up and promotion). Still owed inside B2: b2-7 MFA and Employee → Admin
-  promotion (policy per MFA/1-MFA/7; the spec's mandatory-MFA text must be corrected first, §15 item 15), b2-8 RLS and
-  the cross-tenant security suite (B2-3/20). Update this line when a phase merges.
+  keeping the scheduled outbox job out of `EmailOutboxProcessorTest`; PR #32; decisions B2-6/1-B2-6/16). **b2-7 is
+  merged** (spec correction `docs/b2-7-spec-mfa-policy-correction`, PR #35; then `feature/b2-7-mfa-stepup-onboarding`,
+  PR #36, checkpoints C1-C7: V19 organization MFA policy and employee MFA state, V20 recovery-code tenant binding and
+  invalidation, V21 `mfa_challenge`, V22 `session_step_up`, V23 the re-enrollment pending secret; TOTP (JDK HMAC) and
+  AES-256-GCM secret encryption with a required environment key; voluntary enrollment and `/me` MFA state and reminder;
+  the sign-in `CHALLENGE`/`ENROLL` step with replay protection, single-use recovery codes and lockout counting;
+  session-bound step-up; re-enrollment, disable and recovery-code regeneration; the policy change, selection, MFA reset
+  and Employee → Admin promotion; founder onboarding completion and `needsAdditionalSuperAdmin`; end-to-end, tenant,
+  concurrency and no-leak tests; decisions B2-7/1-B2-7/27 and B2-7/I1-B2-7/I17). **Next: b2-8** (RLS and the
+  cross-tenant security suite, B2-3/20). Update this line when a phase merges.
 
 ## 14. Local environment notes
 
@@ -1457,7 +1557,8 @@ Rows 10–13 are new inconsistencies **inside v9 itself** (or between v9 and the
 | 12 | Tenant key naming: §12's base tables (`department`, `employee`, `calendar_event`, `month_lock`, `leave_type`) write `org_id`, while §2.1.1/§12.1 use `organization_id` and §13.3 writes `orgId` | before `b2-1` | Treat all as the same tenant key; **confirm the exact column name with the owner before creating the tenant schema.** `audit_log` (B0-6/1) already uses `organization_id`; if the owner picks `org_id` for the other tables, that table needs a forward migration to match. |
 | 13 | v9 §16.5 lets `b0-6` add `organization_id` "forward-compatibly", and §12.1 says audit rows carry it, but no `organization` table exists until B2 | before `b0-6` | **B0-6 design resolved; B2 completion pending.** B0-6/1: `audit_log.organization_id UUID NOT NULL`, no FK, no fabricated value ever. B2 still owes: the `organization` table, a matching primary-key type (UUID), the `audit_log` FK, tenant RLS or an equivalent DB defence in depth, and cross-tenant integration tests. Do not implement B2 early. |
 | 14 | §4.9 says comp-off credit is issued **automatically** "when the day is finalized by the nightly job"; this conflicted with a new owner requirement that weekend/holiday work instead create a pending comp-off request needing Admin/Manager approval. Recorded in "Configurable leave, comp-off & weekend policy" (§2) | before `b10-1-credit-on-finalize` | **Owner-approved implementation decision, 2026-09-23: approval-gated, not automatic** (recorded in §2, not a spec edit). `PROJECT_MASTER_SPEC.md` §4.9 still reads "credit is issued when the day is finalized" and **must be corrected through a future `docs:` spec PR before comp-off implementation begins** (§16.2). Until that PR lands, implementation planning for comp-off follows the approved decision recorded in §2. |
-| 15 | Spec D6, §2.1.3 (step 6), §2.1.5, §3.3, §8.2, §8.3, §15 item 5 and §22.1 make MFA **mandatory** for Admin and Super Admin (the founder before first workspace access, a directly invited Admin before first Admin access, a promoted Admin at next login). This conflicts with the owner's decision that MFA is an organization-configurable policy, **disabled by default**. Recorded in "MFA policy decisions" (§2) | before `b2-7-mfa-stepup-onboarding` | **Owner-approved implementation decision, 2026-09-23: configurable, default `DISABLED`** (MFA/1–MFA/7, recorded in §2, not a spec edit). `b2-3` builds no MFA gate. The spec's MFA text **must be corrected through a future `docs:` spec PR before `b2-7` begins** (§16.2). This is a deliberate weakening of spec §15 item 5 ("Mandatory MFA for Admin/Super Admin"), made by the owner; the related launch gates in spec §22.1 (direct Admin invitation and promotion "MFA-enforced") need rewording in the same PR. |
+| 15 | Spec D6, §2.1.3 (step 6), §2.1.5, §3.3, §8.2, §8.3, §15 item 5 and §22.1 made MFA **mandatory** for Admin and Super Admin (the founder before first workspace access, a directly invited Admin before first Admin access, a promoted Admin at next login). This conflicted with the owner's decision that MFA is an organization-configurable policy, **disabled by default**. Recorded in "MFA policy decisions" (§2) | before `b2-7-mfa-stepup-onboarding` | **Resolved.** The spec was corrected to the policy model (configurable, default `DISABLED`, MFA/1–MFA/7) by PR #35 before `b2-7` began, including §15 item 5 and the §22.1 launch gates; `b2-7` implemented it (PR #36). Do not reintroduce globally mandatory MFA wording. |
+| 16 | After PR #35, spec §13.0 still listed a "recovery-code acknowledgement" (a leftover of the old mandatory-MFA gate), named onboarding completion `PATCH /api/v1/organization/onboarding`, and lacked the MFA endpoints `b2-7` built; §12 lacked the `b2-7` MFA columns and tables | the B2-7 docs PR | **Resolved by `docs/b2-7-status-spec-sync`:** §13.0 lists the built MFA, step-up and onboarding endpoints (`POST /api/v1/organization/onboarding/complete`) and states there is no acknowledgement endpoint or state (B2-7/I2); §8.3 describes sign-in, recovery codes, re-enrollment (V23), reset, step-up and `needsAdditionalSuperAdmin`; §12/§12.1 list `organization.mfa_policy`, the employee MFA columns including `mfa_totp_pending_secret`, `mfa_challenge`, `session_step_up` and `mfa_recovery_code.organization_id`/`invalidated_at`; "re-enrolment" is spelled "re-enrollment". |
 
 ## 16. Never do
 
