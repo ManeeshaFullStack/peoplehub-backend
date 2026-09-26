@@ -104,7 +104,7 @@ public class NotificationTestController {
             @PageParams(defaultSize = 20, defaultSort = "createdAt,desc", sortable = "createdAt")
                     PageQuery query) {
         return tenants.inReadOnlyTransaction(
-                organizationId, () -> list(organizationId, employeeId, query));
+                organizationId, () -> listInTenant(organizationId, employeeId, query));
     }
 
     private PageResponse<NotificationView> listInTenant(
