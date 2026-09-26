@@ -16,6 +16,7 @@ import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -167,6 +168,57 @@ class LoginTest {
     }
 
     // ---- failure: one generic answer ----
+
+    /**
+     * b2-8 C3: login now asks V24 for the organization first, so an unknown organization reads no
+     * tenant row, while a known one continues inside it. Whatever the client can observe must still
+     * be identical: status, every header except the per-request correlation id, the whole body
+     * except its per-request fields, exactly one Argon2 check, and no audit row or other tenant
+     * write for either. (The extra resolver query on the known path is a sub-millisecond timing
+     * difference, accepted for C3 and examined in C5's adversarial enumeration tests.)
+     */
+    @Test
+    void aKnownAndAnUnknownOrganizationFailIdenticallyInEverythingTheClientSees() throws Exception {
+        TestIdentities.Organization org = TestIdentities.activeOrganization(jdbc);
+        TestIdentities.Employee active = employeeWithPassword(org);
+        long auditBefore = jdbc.queryForObject("SELECT count(*) FROM audit_log", Long.class);
+
+        clearInvocations(passwordHasher);
+        MvcResult known =
+                mvc.perform(login(org.loginKey(), active.email(), PASSWORD + "x")).andReturn();
+        verify(passwordHasher, times(1)).matches(anyString(), anyString());
+        clearInvocations(passwordHasher);
+        MvcResult unknown =
+                mvc.perform(login("no-such-org-" + UUID.randomUUID(), active.email(), PASSWORD))
+                        .andReturn();
+        verify(passwordHasher, times(1)).matches(anyString(), anyString());
+
+        assertThat(unknown.getResponse().getStatus())
+                .isEqualTo(known.getResponse().getStatus())
+                .isEqualTo(401);
+        assertThat(comparableHeaders(unknown)).isEqualTo(comparableHeaders(known));
+        Map<String, Object> knownBody = body(known);
+        Map<String, Object> unknownBody = body(unknown);
+        for (Map<String, Object> body : List.of(knownBody, unknownBody)) {
+            body.remove("instance");
+            body.remove("correlationId");
+        }
+        assertThat(unknownBody).isEqualTo(knownBody);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_log", Long.class))
+                .as("a failed login is never audited, known organization or not (B0-6/16)")
+                .isEqualTo(auditBefore);
+    }
+
+    /** Every response header, except the correlation id every request gets its own of. */
+    private static Map<String, List<String>> comparableHeaders(MvcResult result) {
+        Map<String, List<String>> headers = new TreeMap<>();
+        for (String name : result.getResponse().getHeaderNames()) {
+            if (!name.equalsIgnoreCase("X-Correlation-Id")) {
+                headers.put(name, result.getResponse().getHeaders(name));
+            }
+        }
+        return headers;
+    }
 
     @Test
     void everyFailureCauseGetsTheSameAnswerAndRunsExactlyOneArgon2Check() throws Exception {

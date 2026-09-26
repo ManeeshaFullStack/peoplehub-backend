@@ -1,6 +1,7 @@
 package com.peoplehub.notification.email;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.common.database.TenantTransactions;
 import com.peoplehub.support.IntegrationTest;
@@ -31,6 +32,8 @@ import net.javacrumbs.shedlock.core.SimpleLock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -166,10 +169,23 @@ class EmailOutboxProcessorTest {
     }
 
     private EmailOutboxProcessor processor(
+            EmailSender sender, Duration staleClaimAfter, int batchSize) {
+        return new EmailOutboxProcessor(
+                jdbc,
+                sender,
+                new EmailTemplateRenderer(JsonMapper.builder().build()),
+                new EmailFailureClassifier(),
+                new RetryPolicy(clock, List.of(Duration.ofMinutes(1))),
+                batchSize,
+                staleClaimAfter,
+                suppressionService,
+                tenantTransactions);
+    }
+
+    private EmailOutboxProcessor processor(
             EmailSender sender, Duration staleClaimAfter, TenantTransactions tenants) {
         return new EmailOutboxProcessor(
                 jdbc,
-                clock,
                 sender,
                 new EmailTemplateRenderer(JsonMapper.builder().build()),
                 new EmailFailureClassifier(),
@@ -224,8 +240,8 @@ class EmailOutboxProcessorTest {
 
     @Test
     void aRowNotYetDueIsNotProcessed() {
-        clock.set("2026-03-10T10:00:00Z");
-        long id = insertRow("RETRYING", 1, Instant.parse("2026-03-10T10:05:00Z")); // 5 min from now
+        // "Due" is judged on the database's clock (V24), so "later" is relative to it.
+        long id = insertRow("RETRYING", 1, databaseNow().plus(Duration.ofMinutes(5)));
 
         int processed = processor(FakeSender.alwaysSucceeds()).run();
 
@@ -396,6 +412,27 @@ class EmailOutboxProcessorTest {
 
     // ---- claim before send, batch size ----
 
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1, 1001})
+    void aBatchSizeTheDiscoveryFunctionWouldRefuseIsRejectedAtStartup(int batchSize) {
+        assertThatThrownBy(
+                        () ->
+                                processor(
+                                        FakeSender.alwaysSucceeds(),
+                                        Duration.ofMinutes(5),
+                                        batchSize))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("batch-size");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PT59S", "PT0S", "-PT5M", "PT24H1S"})
+    void aStaleClaimAgeTheReclaimFunctionWouldRefuseIsRejectedAtStartup(String age) {
+        assertThatThrownBy(() -> processor(FakeSender.alwaysSucceeds(), Duration.parse(age), 100))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("stale-claim-after");
+    }
+
     @Test
     void batchSizeLimitsHowManyRowsOneRunProcesses() {
         for (int i = 0; i < 5; i++) {
@@ -404,7 +441,6 @@ class EmailOutboxProcessorTest {
         EmailOutboxProcessor small =
                 new EmailOutboxProcessor(
                         jdbc,
-                        clock,
                         FakeSender.alwaysSucceeds(),
                         new EmailTemplateRenderer(JsonMapper.builder().build()),
                         new EmailFailureClassifier(),
@@ -459,9 +495,9 @@ class EmailOutboxProcessorTest {
 
     @Test
     void aStaleSendingClaimIsReclaimedAndProcessedOnTheNextRun() {
-        clock.set("2026-03-10T10:00:00Z");
+        // "Stale" is judged on the database's clock (V24), the one that stamps a claim.
         // Looks exactly like a row a previous, now-dead instance claimed and never finished.
-        long id = insertRowInStatus("SENDING", "2026-03-10T09:50:00Z"); // 10 minutes ago
+        long id = insertRowInStatus("SENDING", databaseNow().minus(Duration.ofMinutes(10)));
 
         int processed = processor(FakeSender.alwaysSucceeds(), Duration.ofMinutes(5)).run();
 
@@ -471,9 +507,9 @@ class EmailOutboxProcessorTest {
 
     @Test
     void aRecentSendingClaimIsLeftAloneNotYetStale() {
-        clock.set("2026-03-10T10:00:00Z");
         long id =
-                insertRowInStatus("SENDING", "2026-03-10T09:59:00Z"); // 1 minute ago, not stale yet
+                insertRowInStatus(
+                        "SENDING", databaseNow().minus(Duration.ofMinutes(1))); // not stale yet
 
         int processed = processor(FakeSender.alwaysSucceeds(), Duration.ofMinutes(5)).run();
 
@@ -481,7 +517,11 @@ class EmailOutboxProcessorTest {
         assertThat(row(id).get("status")).isEqualTo("SENDING");
     }
 
-    private long insertRowInStatus(String status, String lastAttemptAt) {
+    private Instant databaseNow() {
+        return jdbcTemplate.queryForObject("SELECT now()", Timestamp.class).toInstant();
+    }
+
+    private long insertRowInStatus(String status, Instant lastAttemptAt) {
         UUID org = TestOrganizations.insert(jdbcTemplate);
         jdbcTemplate.update(
                 "INSERT INTO email_outbox (organization_id, recipient, type, payload, status,"
@@ -492,7 +532,7 @@ class EmailOutboxProcessorTest {
                 {"v":1,"attributes":{"appName":"PeopleHub","firstName":"Jane","inviteCode":"AB12CD","organizationLoginKey":"acme-corp","role":"EMPLOYEE"}}
                 """,
                 status,
-                Timestamp.from(Instant.parse(lastAttemptAt)));
+                Timestamp.from(lastAttemptAt));
         return jdbcTemplate.queryForObject(
                 "SELECT id FROM email_outbox WHERE organization_id = ?", Long.class, org);
     }

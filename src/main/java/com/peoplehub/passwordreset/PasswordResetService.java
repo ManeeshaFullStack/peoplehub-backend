@@ -8,6 +8,7 @@ import com.peoplehub.auth.RefreshTokenService;
 import com.peoplehub.common.api.error.ApiFieldError;
 import com.peoplehub.common.api.error.ApiProblemException;
 import com.peoplehub.common.api.error.ProblemType;
+import com.peoplehub.common.database.PreTenantResolver;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.common.logging.OrganizationId;
 import com.peoplehub.notification.email.EmailMessage;
@@ -76,6 +77,7 @@ public class PasswordResetService {
     private final RefreshTokenService refreshTokenService;
     private final EmailOutboxWriter emailOutboxWriter;
     private final AuditWriter auditWriter;
+    private final PreTenantResolver preTenantResolver;
     private final Clock clock;
     private final Duration ttl;
     private final Duration minInterval;
@@ -90,6 +92,7 @@ public class PasswordResetService {
             RefreshTokenService refreshTokenService,
             EmailOutboxWriter emailOutboxWriter,
             AuditWriter auditWriter,
+            PreTenantResolver preTenantResolver,
             Clock clock,
             @Value("${peoplehub.auth.password-reset.ttl}") Duration ttl,
             @Value("${peoplehub.auth.password-reset.min-interval}") Duration minInterval,
@@ -111,6 +114,7 @@ public class PasswordResetService {
         this.refreshTokenService = refreshTokenService;
         this.emailOutboxWriter = emailOutboxWriter;
         this.auditWriter = auditWriter;
+        this.preTenantResolver = preTenantResolver;
         this.clock = clock;
         this.ttl = ttl;
         this.minInterval = minInterval;
@@ -120,8 +124,19 @@ public class PasswordResetService {
 
     @Transactional
     public ForgotPasswordResponse forgot(ForgotPasswordRequest request, InetAddress ip) {
+        // The organization first (V24), binding this transaction to it; an unknown one reads no
+        // tenant row and gives the same answer (b2-8, O3).
         loginKey(request.organization())
-                .flatMap(key -> store.activeAccountForUpdate(key, normalizeEmail(request.email())))
+                .flatMap(
+                        key ->
+                                preTenantResolver
+                                        .bindByLoginKey(key)
+                                        .flatMap(
+                                                organizationId ->
+                                                        store.activeAccountForUpdate(
+                                                                organizationId,
+                                                                key,
+                                                                normalizeEmail(request.email()))))
                 .filter(this::throttleAllows)
                 .ifPresent(account -> issue(account, ip));
         return new ForgotPasswordResponse(FORGOT_MESSAGE);
@@ -131,7 +146,15 @@ public class PasswordResetService {
     public void reset(ResetPasswordRequest request, InetAddress ip) {
         PasswordResetStore.Reset reset =
                 tokenHash(request.token())
-                        .flatMap(store::byTokenHashForUpdate)
+                        // The code's organization first (V24), binding this transaction to it.
+                        .flatMap(
+                                hash ->
+                                        preTenantResolver
+                                                .bindByPasswordResetToken(hash)
+                                                .flatMap(
+                                                        organizationId ->
+                                                                store.byTokenHashForUpdate(
+                                                                        organizationId, hash)))
                         .filter(found -> found.isUsableAt(clock.instant()))
                         .orElseThrow(
                                 () ->

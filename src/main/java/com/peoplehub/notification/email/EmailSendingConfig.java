@@ -42,7 +42,6 @@ public class EmailSendingConfig {
     @Bean
     public EmailOutboxProcessor emailOutboxProcessor(
             JdbcClient jdbc,
-            Clock clock,
             EmailSender sender,
             EmailTemplateRenderer renderer,
             EmailFailureClassifier classifier,
@@ -53,7 +52,6 @@ public class EmailSendingConfig {
             TenantTransactions tenantTransactions) {
         return new EmailOutboxProcessor(
                 jdbc,
-                clock,
                 sender,
                 renderer,
                 classifier,

@@ -2,7 +2,6 @@ package com.peoplehub.notification.email;
 
 import com.peoplehub.common.database.TenantTransactions;
 import java.sql.Timestamp;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -35,8 +34,15 @@ import org.springframework.mail.MailException;
  */
 public class EmailOutboxProcessor {
 
+    /** The most rows one run discovers: the limit of {@code peoplehub_email_outbox_due} (V24). */
+    static final int MAX_BATCH_SIZE = 1000;
+
+    /** The shortest and longest stale-claim age the V24 reclaim function accepts. */
+    static final Duration MIN_STALE_CLAIM_AFTER = Duration.ofMinutes(1);
+
+    static final Duration MAX_STALE_CLAIM_AFTER = Duration.ofDays(1);
+
     private final JdbcClient jdbc;
-    private final Clock clock;
     private final EmailSender sender;
     private final EmailTemplateRenderer renderer;
     private final EmailFailureClassifier classifier;
@@ -48,7 +54,6 @@ public class EmailOutboxProcessor {
 
     public EmailOutboxProcessor(
             JdbcClient jdbc,
-            Clock clock,
             EmailSender sender,
             EmailTemplateRenderer renderer,
             EmailFailureClassifier classifier,
@@ -57,8 +62,18 @@ public class EmailOutboxProcessor {
             Duration staleClaimAfter,
             EmailSuppressionService suppressionService,
             TenantTransactions tenantTransactions) {
+        if (batchSize < 1 || batchSize > MAX_BATCH_SIZE) {
+            // The V24 discovery function answers at most this many rows per call.
+            throw new IllegalStateException(
+                    "peoplehub.email.outbox.batch-size must be between 1 and " + MAX_BATCH_SIZE);
+        }
+        if (staleClaimAfter.compareTo(MIN_STALE_CLAIM_AFTER) < 0
+                || staleClaimAfter.compareTo(MAX_STALE_CLAIM_AFTER) > 0) {
+            // The V24 reclaim function refuses any other age.
+            throw new IllegalStateException(
+                    "peoplehub.email.outbox.stale-claim-after must be between 1 minute and 1 day");
+        }
         this.jdbc = jdbc;
-        this.clock = clock;
         this.sender = sender;
         this.renderer = renderer;
         this.classifier = classifier;
@@ -90,28 +105,28 @@ public class EmailOutboxProcessor {
         return processed;
     }
 
+    /**
+     * Rows left {@code SENDING} by a worker that died mid-send become {@code RETRYING} again,
+     * across every organization, through the owner-defined V24 function (b2-8, O4): only their
+     * status changes, and the worker reads nothing of them. "Stale" is judged on the database's
+     * clock, the one that stamped the claim; the worker supplies only the configured age.
+     */
     private void reclaimStaleClaims() {
-        jdbc.sql(
-                        "UPDATE email_outbox SET status = 'RETRYING'"
-                                + " WHERE status = 'SENDING' AND last_attempt_at < ?")
-                .param(Timestamp.from(clock.instant().minus(staleClaimAfter)))
-                .update();
+        jdbc.sql("SELECT peoplehub_email_outbox_reclaim_stale(make_interval(secs => ?))")
+                .param(staleClaimAfter.toSeconds())
+                .query(Integer.class)
+                .single();
     }
 
     /**
-     * The due rows of every organization, with each row's organization. Like {@link
-     * #reclaimStaleClaims}, this one statement spans all tenants and runs outside a tenant
-     * transaction; b2-8's owner-defined claim function replaces both (owner decision O4).
-     * Everything done to a single row afterwards runs in a transaction bound to that row's
+     * The rows of every organization due now by the database's clock, oldest first: only each row's
+     * id and organization id, through the owner-defined V24 function (b2-8, O4). Like {@link
+     * #reclaimStaleClaims}, it is the one step that spans organizations; everything done to a
+     * single row afterwards (claim, load, record) runs in a transaction bound to that row's
      * organization.
      */
     private List<Due> selectDue() {
-        return jdbc.sql(
-                        "SELECT id, organization_id FROM email_outbox"
-                                + " WHERE status IN ('PENDING', 'RETRYING')"
-                                + " AND (next_attempt_at IS NULL OR next_attempt_at <= ?)"
-                                + " ORDER BY id LIMIT ?")
-                .param(Timestamp.from(clock.instant()))
+        return jdbc.sql("SELECT id, organization_id FROM peoplehub_email_outbox_due(?)")
                 .param(batchSize)
                 .query(
                         (rs, rowNum) ->

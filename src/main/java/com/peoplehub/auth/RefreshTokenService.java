@@ -6,6 +6,7 @@ import com.peoplehub.audit.AuditTarget;
 import com.peoplehub.audit.AuditWriter;
 import com.peoplehub.auth.RefreshTokenStore.RevokeReason;
 import com.peoplehub.auth.RefreshTokenStore.StoredRefreshToken;
+import com.peoplehub.common.database.PreTenantResolver;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.common.logging.OrganizationId;
 import com.peoplehub.security.SecureTokens;
@@ -57,6 +58,7 @@ public class RefreshTokenService {
     private final AccessTokenIssuer accessTokenIssuer;
     private final ActiveEmployeeLock activeEmployeeLock;
     private final AuditWriter auditWriter;
+    private final PreTenantResolver preTenantResolver;
     private final Clock clock;
     private final Duration slidingTtl;
     private final Duration absoluteTtl;
@@ -67,6 +69,7 @@ public class RefreshTokenService {
             AccessTokenIssuer accessTokenIssuer,
             ActiveEmployeeLock activeEmployeeLock,
             AuditWriter auditWriter,
+            PreTenantResolver preTenantResolver,
             Clock clock,
             @Value("${peoplehub.auth.refresh-token.sliding-ttl}") Duration slidingTtl,
             @Value("${peoplehub.auth.refresh-token.absolute-ttl}") Duration absoluteTtl) {
@@ -82,6 +85,7 @@ public class RefreshTokenService {
         this.accessTokenIssuer = accessTokenIssuer;
         this.activeEmployeeLock = activeEmployeeLock;
         this.auditWriter = auditWriter;
+        this.preTenantResolver = preTenantResolver;
         this.clock = clock;
         this.slidingTtl = slidingTtl;
         this.absoluteTtl = absoluteTtl;
@@ -119,7 +123,12 @@ public class RefreshTokenService {
     @Transactional
     public Optional<SessionTokens> refresh(String rawToken, InetAddress ip) {
         String tokenHash = secureTokens.hash(rawToken);
-        Optional<RefreshTokenStore.Owner> owner = store.owner(tokenHash);
+        // The token's organization first (V24), binding this transaction to it (b2-8, O3).
+        Optional<UUID> organizationId = preTenantResolver.bindByRefreshToken(tokenHash);
+        if (organizationId.isEmpty()) {
+            return Optional.empty();
+        }
+        Optional<RefreshTokenStore.Owner> owner = store.owner(organizationId.get(), tokenHash);
         if (owner.isEmpty()) {
             return Optional.empty();
         }
@@ -128,7 +137,7 @@ public class RefreshTokenService {
         Optional<String> role =
                 activeEmployeeLock.forRefresh(
                         owner.get().employeeId(), owner.get().organizationId());
-        Optional<StoredRefreshToken> found = store.findForUpdate(tokenHash);
+        Optional<StoredRefreshToken> found = store.findForUpdate(organizationId.get(), tokenHash);
         if (found.isEmpty()) {
             return Optional.empty();
         }
@@ -189,7 +198,13 @@ public class RefreshTokenService {
      */
     @Transactional
     public void logout(String rawToken, InetAddress ip) {
-        Optional<StoredRefreshToken> found = store.findForUpdate(secureTokens.hash(rawToken));
+        String tokenHash = secureTokens.hash(rawToken);
+        // The token's organization first (V24), binding this transaction to it (b2-8, O3). An
+        // unknown token is still no error.
+        Optional<StoredRefreshToken> found =
+                preTenantResolver
+                        .bindByRefreshToken(tokenHash)
+                        .flatMap(organizationId -> store.findForUpdate(organizationId, tokenHash));
         if (found.isEmpty() || found.get().revoked()) {
             return;
         }
