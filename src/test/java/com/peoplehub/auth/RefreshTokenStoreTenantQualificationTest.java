@@ -2,6 +2,7 @@ package com.peoplehub.auth;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
@@ -39,15 +40,18 @@ class RefreshTokenStoreTenantQualificationTest {
                         String.class,
                         family);
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
-
-        Optional<RefreshTokenStore.Owner> ownerInside =
-                tx.execute(status -> store.owner(org.id(), hash));
-        Optional<RefreshTokenStore.Owner> ownerElsewhere =
-                tx.execute(status -> store.owner(other.id(), hash));
-        Optional<RefreshTokenStore.StoredRefreshToken> tokenInside =
-                tx.execute(status -> store.findForUpdate(org.id(), hash));
-        Optional<RefreshTokenStore.StoredRefreshToken> tokenElsewhere =
-                tx.execute(status -> store.findForUpdate(other.id(), hash));
+        // Bound to the token's own organization (V25): the foreign-organization lookups are
+        // filtered by the application's own predicate, with row-level security behind it.
+        Optional<RefreshTokenStore.Owner> ownerInside;
+        Optional<RefreshTokenStore.Owner> ownerElsewhere;
+        Optional<RefreshTokenStore.StoredRefreshToken> tokenInside;
+        Optional<RefreshTokenStore.StoredRefreshToken> tokenElsewhere;
+        try (TenantContext.Scope tenant = TenantContext.open(org.id())) {
+            ownerInside = tx.execute(status -> store.owner(org.id(), hash));
+            ownerElsewhere = tx.execute(status -> store.owner(other.id(), hash));
+            tokenInside = tx.execute(status -> store.findForUpdate(org.id(), hash));
+            tokenElsewhere = tx.execute(status -> store.findForUpdate(other.id(), hash));
+        }
 
         assertThat(ownerInside).isPresent();
         assertThat(ownerElsewhere).isEmpty();

@@ -24,6 +24,10 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * EmailSuppressionRuntimeRoleTest}'s coverage of the equivalent V7 table, including its use of a
  * fresh unique login key per test (the table's own unique key) instead of a shared literal, since
  * {@code @IntegrationTest} does not roll back between methods.
+ *
+ * <p>b2-8 C4 (V25): row-level security applies, so the connection is bound to the organization a
+ * test works on, and organizations are created only through {@code peoplehub_create_organization}:
+ * the direct INSERT is revoked.
  */
 @IntegrationTest
 class OrganizationRuntimeRoleTest {
@@ -31,6 +35,12 @@ class OrganizationRuntimeRoleTest {
     @Autowired private PostgreSQLContainer postgres;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -64,18 +74,31 @@ class OrganizationRuntimeRoleTest {
                                         .containsAnyOf("permission denied", "must be owner"));
     }
 
-    @Test
-    void insertOnNameLoginKeyAndTimezoneSucceedsAndSelectSucceeds() throws SQLException {
-        String key = uniqueLoginKey();
+    /** Creates an organization the only way the runtime role may: V24's function (V25). */
+    private UUID create(String name, String loginKey) throws SQLException {
         try (PreparedStatement ps =
-                runtime.prepareStatement(
-                        "INSERT INTO organization (name, login_key_normalized, timezone)"
-                                + " VALUES (?, ?, ?)")) {
-            ps.setString(1, "Acme Corp");
-            ps.setString(2, key);
+                runtime.prepareStatement("SELECT peoplehub_create_organization(?, ?, ?)")) {
+            ps.setString(1, name);
+            ps.setString(2, loginKey);
             ps.setString(3, "Asia/Kolkata");
-            assertThat(ps.executeUpdate()).isEqualTo(1);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getObject(1, UUID.class);
+            }
         }
+    }
+
+    @Test
+    void directInsertIsDeniedAndCreationGoesThroughTheV24Function() throws SQLException {
+        // b2-8 C4 (V25): the direct INSERT granted by V8 is revoked.
+        assertDenied(
+                "INSERT INTO organization (name, login_key_normalized, timezone)"
+                        + " VALUES ('Acme Corp', '"
+                        + uniqueLoginKey()
+                        + "', 'Asia/Kolkata')");
+
+        String key = uniqueLoginKey();
+        UUID id = bound(create("Acme Corp", key));
 
         try (PreparedStatement ps =
                 runtime.prepareStatement(
@@ -83,7 +106,7 @@ class OrganizationRuntimeRoleTest {
             ps.setString(1, key);
             try (ResultSet rs = ps.executeQuery()) {
                 assertThat(rs.next()).isTrue();
-                assertThat(rs.getObject("id")).isNotNull();
+                assertThat(rs.getObject("id")).isEqualTo(id);
                 assertThat(rs.getString("status")).isEqualTo("PENDING_VERIFICATION");
             }
         }
@@ -124,15 +147,7 @@ class OrganizationRuntimeRoleTest {
     @Test
     void nameTimezoneStatusOnboardingAndUpdatedAtCanBeUpdated() throws SQLException {
         String key = uniqueLoginKey();
-        try (PreparedStatement ps =
-                runtime.prepareStatement(
-                        "INSERT INTO organization (name, login_key_normalized, timezone)"
-                                + " VALUES (?, ?, ?)")) {
-            ps.setString(1, "Acme Corp");
-            ps.setString(2, key);
-            ps.setString(3, "Asia/Kolkata");
-            ps.executeUpdate();
-        }
+        bound(create("Acme Corp", key));
 
         try (PreparedStatement ps =
                 runtime.prepareStatement(
@@ -156,23 +171,16 @@ class OrganizationRuntimeRoleTest {
     }
 
     @Test
-    void loginKeyAndIdCannotBeUpdated() {
+    void loginKeyAndIdCannotBeUpdated() throws SQLException {
+        bound(create("Acme Corp", uniqueLoginKey()));
+
         assertDenied("UPDATE organization SET login_key_normalized = 'someone-else'");
         assertDenied("UPDATE organization SET id = gen_random_uuid()");
     }
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
-        String key = uniqueLoginKey();
-        try (PreparedStatement ps =
-                runtime.prepareStatement(
-                        "INSERT INTO organization (name, login_key_normalized, timezone)"
-                                + " VALUES (?, ?, ?)")) {
-            ps.setString(1, "Acme Corp");
-            ps.setString(2, key);
-            ps.setString(3, "Asia/Kolkata");
-            ps.executeUpdate();
-        }
+        bound(create("Acme Corp", uniqueLoginKey()));
 
         assertDenied("DELETE FROM organization");
         assertDenied("TRUNCATE organization");
@@ -180,16 +188,7 @@ class OrganizationRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleToo() {
-        assertThatThrownBy(
-                        () -> {
-                            try (Statement s = runtime.createStatement()) {
-                                s.execute(
-                                        "INSERT INTO organization (name, login_key_normalized,"
-                                                + " timezone) VALUES ('', '"
-                                                + uniqueLoginKey()
-                                                + "', 'Asia/Kolkata')");
-                            }
-                        })
+        assertThatThrownBy(() -> create("", uniqueLoginKey()))
                 .satisfies(
                         e ->
                                 assertThat(SqlErrors.sqlState(e))

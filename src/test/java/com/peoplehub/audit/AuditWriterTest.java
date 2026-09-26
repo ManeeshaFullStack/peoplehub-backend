@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.common.api.correlation.CorrelationId;
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.PrivilegedFixture;
@@ -53,6 +54,7 @@ class AuditWriterTest {
 
     private TransactionTemplate tx;
     private UUID org;
+    private TenantContext.Scope tenant;
 
     @BeforeEach
     void setUp() {
@@ -60,12 +62,15 @@ class AuditWriterTest {
         // b2-1 (V12): audit_log.organization_id now has a real FK to organization(id), so a
         // synthetic UUID.randomUUID() no longer resolves; TestOrganizations inserts a real row.
         org = TestOrganizations.insert(jdbc);
+        // b2-8 C4 (V25): the tenant an authenticated request or a job would have bound.
+        tenant = TenantContext.open(org);
         ActorId.set("job:audit-writer-test");
         MDC.remove(CorrelationId.MDC_KEY);
     }
 
     @AfterEach
     void clearContext() {
+        tenant.close();
         ActorId.clear();
         MDC.remove(CorrelationId.MDC_KEY);
     }
@@ -166,7 +171,9 @@ class AuditWriterTest {
             UUID organization = TestOrganizations.insert(jdbc);
             ActorId.set(actor);
 
-            append(AuditEvent.builder(organization, "SOMETHING_HAPPENED").build());
+            try (TenantContext.Scope scope = TenantContext.open(organization)) {
+                append(AuditEvent.builder(organization, "SOMETHING_HAPPENED").build());
+            }
 
             assertThat(onlyRow(organization).get("actor_id")).isEqualTo(actor);
         }
@@ -316,7 +323,8 @@ class AuditWriterTest {
                                 () -> {
                                     // MDC is per thread: each writer is its own actor.
                                     ActorId.set(actor);
-                                    try {
+                                    // So is the tenant (V25): each writer binds its own.
+                                    try (TenantContext.Scope scope = TenantContext.open(org)) {
                                         start.await();
                                         for (int i = 0; i < perWriter; i++) {
                                             int n = i;

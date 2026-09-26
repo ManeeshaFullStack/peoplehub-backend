@@ -38,6 +38,12 @@ class EmployeeInvitationRuntimeRoleTest {
 
     private Connection runtime;
 
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
+
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
         runtime = TestDatabaseRoles.runtimeConnection(postgres);
@@ -117,7 +123,7 @@ class EmployeeInvitationRuntimeRoleTest {
 
     @Test
     void insertOnTheGrantedColumnsSucceedsAndSelectSucceeds() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID inviter = insertInviter(org);
 
         UUID id = insertInvitation(org, inviter);
@@ -135,7 +141,7 @@ class EmployeeInvitationRuntimeRoleTest {
 
     @Test
     void idAndCreatedAtCannotBeSuppliedOnInsertEvenThoughTheyHaveDefaults() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID inviter = insertInviter(org);
 
         assertDenied(
@@ -162,7 +168,7 @@ class EmployeeInvitationRuntimeRoleTest {
 
     @Test
     void consumedAtAndRevokedAtCanBeUpdated() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID inviter = insertInviter(org);
         UUID id = insertInvitation(org, inviter);
 
@@ -184,7 +190,7 @@ class EmployeeInvitationRuntimeRoleTest {
 
     @Test
     void otherColumnsCannotBeUpdated() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID inviter = insertInviter(org);
         UUID id = insertInvitation(org, inviter);
 
@@ -200,7 +206,7 @@ class EmployeeInvitationRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID inviter = insertInviter(org);
         insertInvitation(org, inviter);
 
@@ -210,7 +216,7 @@ class EmployeeInvitationRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleToo() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID inviter = insertInviter(org);
 
         assertThatThrownBy(

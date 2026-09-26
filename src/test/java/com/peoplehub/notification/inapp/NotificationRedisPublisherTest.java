@@ -2,12 +2,14 @@ package com.peoplehub.notification.inapp;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.util.UUID;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +32,16 @@ import org.springframework.transaction.support.TransactionTemplate;
 @IntegrationTest
 class NotificationRedisPublisherTest {
 
+    private TenantContext.Scope tenant;
+
+    @AfterEach
+    void closeTenant() {
+        if (tenant != null) {
+            tenant.close();
+            tenant = null;
+        }
+    }
+
     @Autowired private NotificationWriter writer;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private RedisMessageListenerContainer container;
@@ -45,6 +57,8 @@ class NotificationRedisPublisherTest {
     @Test
     void aCommittedWriteIsPublishedToItsChannel() throws Exception {
         UUID org = TestOrganizations.insert(jdbc);
+        // b2-8 C4 (V25): the tenant an authenticated request or a job would have bound.
+        tenant = TenantContext.open(org);
         UUID employee = UUID.randomUUID();
         LinkedBlockingQueue<String> received = new LinkedBlockingQueue<>();
         ChannelTopic topic = new ChannelTopic(NotificationChannel.of(org, employee));
@@ -69,6 +83,8 @@ class NotificationRedisPublisherTest {
     @Test
     void aRolledBackWriteIsNeverPublished() throws Exception {
         UUID org = TestOrganizations.insert(jdbc);
+        // b2-8 C4 (V25): the tenant an authenticated request or a job would have bound.
+        tenant = TenantContext.open(org);
         UUID employee = UUID.randomUUID();
         LinkedBlockingQueue<String> received = new LinkedBlockingQueue<>();
         ChannelTopic topic = new ChannelTopic(NotificationChannel.of(org, employee));

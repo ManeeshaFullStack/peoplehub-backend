@@ -3,11 +3,13 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.notification.inapp.NotificationCreatedEvent;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +32,16 @@ import org.springframework.transaction.support.TransactionTemplate;
 @RecordApplicationEvents
 class EmailSuppressionNotifierTest {
 
+    private TenantContext.Scope tenant;
+
+    @AfterEach
+    void closeTenant() {
+        if (tenant != null) {
+            tenant.close();
+            tenant = null;
+        }
+    }
+
     @Autowired private EmailSuppressionNotifier notifier;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private ApplicationEvents events;
@@ -45,6 +57,8 @@ class EmailSuppressionNotifierTest {
     @Test
     void notifyAdminWritesANotificationAndPublishesItsCreatedEvent() {
         UUID org = TestOrganizations.insert(jdbc);
+        // b2-8 C4 (V25): the tenant an authenticated request or a job would have bound.
+        tenant = TenantContext.open(org);
         UUID admin = UUID.randomUUID();
 
         tx.executeWithoutResult(

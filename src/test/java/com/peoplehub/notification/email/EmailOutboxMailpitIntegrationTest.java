@@ -3,6 +3,7 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.PeopleHubApplication;
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestOrganizations;
 import com.peoplehub.support.TestcontainersConfiguration;
@@ -114,7 +115,11 @@ class EmailOutboxMailpitIntegrationTest {
                                         .build())
                         .build();
 
-        tx.executeWithoutResult(status -> writer.enqueue(message));
+        // b2-8 C4 (V25): enqueued under the organization's tenant, as its request would be; the
+        // worker then finds it through V24 and sends it under the same tenant.
+        try (TenantContext.Scope tenant = TenantContext.open(org)) {
+            tx.executeWithoutResult(status -> writer.enqueue(message));
+        }
 
         waitUntil(
                 "the outbox row to become SENT",

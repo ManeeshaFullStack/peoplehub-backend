@@ -44,6 +44,12 @@ class AuditLogRuntimeRoleTest {
 
     private Connection runtime;
 
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
+
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
         runtime = TestDatabaseRoles.runtimeConnection(postgres);
@@ -98,12 +104,12 @@ class AuditLogRuntimeRoleTest {
 
     @Test
     void insertSucceeds() throws SQLException {
-        assertThat(insertRow(TestOrganizations.insert(jdbc))).isEqualTo(1);
+        assertThat(insertRow(bound(TestOrganizations.insert(jdbc)))).isEqualTo(1);
     }
 
     @Test
     void selectSucceeds() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         insertRow(org);
 
         try (PreparedStatement ps =
@@ -126,7 +132,7 @@ class AuditLogRuntimeRoleTest {
     void theRowIdAndTimeAreGeneratedEvenThoughTheRoleCannotSupplyThem() throws SQLException {
         // The identity column needs no privilege on its sequence or on `id` for the default to
         // apply.
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         insertRow(org);
         insertRow(org);
 
@@ -183,7 +189,7 @@ class AuditLogRuntimeRoleTest {
 
     @Test
     void updateDeleteAndTruncateAreDenied() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         insertRow(org);
 
         assertDenied("UPDATE audit_log SET action = 'TAMPERED'");
@@ -206,6 +212,9 @@ class AuditLogRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleToo() {
+        // Bound to the nil id (V25), so the nil-id row passes the tenant policy and meets its
+        // CHECK.
+        bound(new UUID(0L, 0L));
         assertThatThrownBy(
                         () -> {
                             try (Statement s = runtime.createStatement()) {
@@ -217,7 +226,11 @@ class AuditLogRuntimeRoleTest {
                 .satisfies(
                         e ->
                                 assertThat(SqlErrors.sqlState(e))
-                                        .isEqualTo(SqlErrors.NOT_NULL_VIOLATION));
+                                        // V25: a NULL tenant can never match the bound one, so the
+                                        // tenant policy refuses the
+                                        // row before NOT NULL is reached (NOT NULL itself: the
+                                        // migration tests).
+                                        .isEqualTo(SqlErrors.INSUFFICIENT_PRIVILEGE));
         assertThatThrownBy(
                         () -> {
                             try (Statement s = runtime.createStatement()) {

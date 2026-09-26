@@ -32,6 +32,12 @@ class SessionRevokeReasonsRuntimeRoleTest {
 
     private Connection runtime;
 
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
+
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
         runtime = TestDatabaseRoles.runtimeConnection(postgres);
@@ -51,6 +57,7 @@ class SessionRevokeReasonsRuntimeRoleTest {
                                 + " VALUES ('Acme Corp', ?, 'Asia/Kolkata') RETURNING id",
                         UUID.class,
                         "org-" + UUID.randomUUID());
+        bound(org);
         String email = "jane-" + UUID.randomUUID() + "@example.com";
         UUID employee =
                 jdbc.queryForObject(
@@ -120,6 +127,7 @@ class SessionRevokeReasonsRuntimeRoleTest {
         insertToken(employee, UUID.randomUUID());
         insertToken(other, UUID.randomUUID());
 
+        bound(employee.organizationId());
         try (PreparedStatement ps =
                 runtime.prepareStatement(
                         "UPDATE refresh_token SET revoked = true, revoked_at = now(),"

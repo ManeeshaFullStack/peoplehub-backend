@@ -44,6 +44,12 @@ class EmployeeRuntimeRoleTest {
 
     private Connection runtime;
 
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
+
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
         runtime = TestDatabaseRoles.runtimeConnection(postgres);
@@ -91,7 +97,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void insertOnTheGrantedColumnsSucceedsAndSelectSucceeds() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         String email = uniqueEmail();
         UUID id;
         try (PreparedStatement ps =
@@ -122,7 +128,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void idCannotBeSuppliedOnInsertEvenThoughItHasADefault() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         String email = uniqueEmail();
 
         assertDenied(
@@ -140,7 +146,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void employeeCodeCannotBeUpdatedEvenThoughInsertIsGranted() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID id = insertEmployee(org);
 
         assertDenied("UPDATE employee SET employee_code = 'NEW-CODE' WHERE id = '" + id + "'");
@@ -148,7 +154,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void emailCannotBeUpdated() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID id = insertEmployee(org);
 
         // role became updatable in b2-7 (V19, promotion): MfaPolicyRuntimeRoleTest.
@@ -159,7 +165,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void passwordHashMfaFieldsWelcomeSeenAtAndDepartmentCanBeUpdated() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID id = insertEmployee(org);
 
         try (PreparedStatement ps =
@@ -184,7 +190,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         insertEmployee(org);
 
         assertDenied("DELETE FROM employee");
@@ -193,7 +199,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleToo() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
 
         assertThatThrownBy(
                         () -> {

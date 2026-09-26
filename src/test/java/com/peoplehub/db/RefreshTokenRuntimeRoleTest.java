@@ -36,6 +36,12 @@ class RefreshTokenRuntimeRoleTest {
 
     private Connection runtime;
 
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
+
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
         runtime = TestDatabaseRoles.runtimeConnection(postgres);
@@ -112,7 +118,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void insertOnTheGrantedColumnsSucceedsAndSelectSucceeds() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         UUID id = insertToken(org, employee);
@@ -129,7 +135,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void idAndCreatedAtCannotBeSuppliedOnInsert() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertDenied(
@@ -148,7 +154,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void theRevocationColumnsCanBeUpdatedButNothingElseCan() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         UUID id = insertToken(org, employee);
         UUID successor = insertToken(org, employee);
@@ -179,7 +185,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         insertToken(org, employee);
 
@@ -189,7 +195,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleToo() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertThatThrownBy(

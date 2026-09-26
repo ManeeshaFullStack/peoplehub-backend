@@ -31,6 +31,12 @@ class MfaPolicyRuntimeRoleTest {
 
     private Connection runtime;
 
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
+
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
         runtime = TestDatabaseRoles.runtimeConnection(postgres);
@@ -89,7 +95,7 @@ class MfaPolicyRuntimeRoleTest {
 
     @Test
     void theRuntimeRoleCanChangeTheOrganizationPolicy() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
 
         assertThat(
                         update(
@@ -101,7 +107,7 @@ class MfaPolicyRuntimeRoleTest {
 
     @Test
     void theRuntimeRoleCanRecordEnrollmentSelectionReplayStepAndDismissal() throws SQLException {
-        UUID employee = insertEmployee(insertOrganization());
+        UUID employee = insertEmployee(bound(insertOrganization()));
 
         assertThat(
                         update(
@@ -115,7 +121,7 @@ class MfaPolicyRuntimeRoleTest {
 
     @Test
     void theRuntimeRoleCanChangeARoleForPromotion() throws SQLException {
-        UUID employee = insertEmployee(insertOrganization());
+        UUID employee = insertEmployee(bound(insertOrganization()));
 
         assertThat(update("UPDATE employee SET role = 'ADMIN' WHERE id = ?", employee))
                 .isEqualTo(1);
@@ -123,7 +129,7 @@ class MfaPolicyRuntimeRoleTest {
 
     @Test
     void identityColumnsStayImmutable() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertDenied("UPDATE organization SET login_key_normalized = 'x' WHERE id = '" + org + "'");
@@ -142,6 +148,8 @@ class MfaPolicyRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateStayDenied() {
+        // Bound to some tenant (V25), so what refuses these is the missing privilege.
+        bound(UUID.randomUUID());
         assertDenied("DELETE FROM organization");
         assertDenied("TRUNCATE organization");
         assertDenied("DELETE FROM employee");
@@ -150,7 +158,7 @@ class MfaPolicyRuntimeRoleTest {
 
     @Test
     void theChecksApplyToTheRuntimeRoleToo() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertThatThrownBy(
@@ -172,7 +180,7 @@ class MfaPolicyRuntimeRoleTest {
 
     @Test
     void theRuntimeRoleCanRevokeWithTheNewReasons() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         for (String reason : new String[] {"MFA_REQUIRED", "MFA_RESET", "ROLE_CHANGED"}) {
             UUID token =

@@ -8,6 +8,7 @@ import com.peoplehub.audit.AuditDetails;
 import com.peoplehub.audit.AuditEvent;
 import com.peoplehub.audit.AuditTarget;
 import com.peoplehub.audit.AuditWriter;
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
@@ -233,7 +234,7 @@ class TwoRoleWiringTest {
                     .as("who ran the migrations")
                     .isEqualTo(TestDatabaseRoles.OWNER_ROLE);
             assertThat(scalar(c, "SELECT count(*) FROM flyway_schema_history WHERE success"))
-                    .isEqualTo("24");
+                    .isEqualTo("25");
             for (String table :
                     List.of("audit_log", "shedlock", "email_outbox", "flyway_schema_history")) {
                 assertThat(
@@ -264,34 +265,40 @@ class TwoRoleWiringTest {
         JdbcTemplate appJdbc = new JdbcTemplate(context.getBean(DataSource.class));
         TransactionTemplate tx =
                 new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
-        // b2-1 (V12): audit_log.organization_id now has a real FK. The runtime role has INSERT on
-        // organization's (name, login_key_normalized, timezone) since V8, so appJdbc (already
-        // connected as the runtime role in this test) can create the fixture rows itself.
-        UUID org = TestOrganizations.insert(appJdbc);
-        UUID rolledBack = TestOrganizations.insert(appJdbc);
+        // b2-1 (V12): audit_log.organization_id has a real FK. Since b2-8 C4 (V25) the runtime role
+        // can no longer insert organizations directly, so the fixture rows come from the superuser;
+        // everything the application does still runs as the runtime role, under each tenant.
+        JdbcTemplate fixture = TestDatabaseRoles.privilegedFixtureJdbc(POSTGRES);
+        UUID org = TestOrganizations.insert(fixture);
+        UUID rolledBack = TestOrganizations.insert(fixture);
         ActorId.set("job:two-role-test");
         try {
-            tx.executeWithoutResult(
-                    status ->
+            try (TenantContext.Scope tenant = TenantContext.open(org)) {
+                tx.executeWithoutResult(
+                        status ->
+                                writer.append(
+                                        AuditEvent.builder(org, "SOMETHING_HAPPENED")
+                                                .target(AuditTarget.of("EMPLOYEE", "e-1"))
+                                                .details(
+                                                        AuditDetails.builder()
+                                                                .change("role", "EMPLOYEE", "ADMIN")
+                                                                .build())
+                                                .build()));
+            }
+            try (TenantContext.Scope tenant = TenantContext.open(rolledBack)) {
+                tx.executeWithoutResult(
+                        status -> {
                             writer.append(
-                                    AuditEvent.builder(org, "SOMETHING_HAPPENED")
-                                            .target(AuditTarget.of("EMPLOYEE", "e-1"))
-                                            .details(
-                                                    AuditDetails.builder()
-                                                            .change("role", "EMPLOYEE", "ADMIN")
-                                                            .build())
-                                            .build()));
-            tx.executeWithoutResult(
-                    status -> {
-                        writer.append(AuditEvent.builder(rolledBack, "SOMETHING_HAPPENED").build());
-                        status.setRollbackOnly();
-                    });
+                                    AuditEvent.builder(rolledBack, "SOMETHING_HAPPENED").build());
+                            status.setRollbackOnly();
+                        });
+            }
         } finally {
             ActorId.clear();
         }
 
         Map<String, Object> row =
-                appJdbc.queryForMap(
+                fixture.queryForMap(
                         "SELECT actor_id, action, occurred_at IS NOT NULL AS timed, id > 0 AS ided"
                                 + " FROM audit_log WHERE organization_id = ?",
                         org);
@@ -300,7 +307,7 @@ class TwoRoleWiringTest {
         assertThat(row.get("timed")).isEqualTo(true);
         assertThat(row.get("ided")).isEqualTo(true);
         assertThat(
-                        appJdbc.queryForObject(
+                        fixture.queryForObject(
                                 "SELECT count(*) FROM audit_log WHERE organization_id = ?",
                                 Long.class,
                                 rolledBack))
@@ -310,14 +317,25 @@ class TwoRoleWiringTest {
     @Test
     @Order(5)
     void theApplicationsOwnConnectionsCannotUpdateDeleteOrTruncate() {
-        JdbcTemplate appJdbc = new JdbcTemplate(app().getBean(DataSource.class));
+        ConfigurableApplicationContext context = app();
+        JdbcTemplate appJdbc = new JdbcTemplate(context.getBean(DataSource.class));
+        TransactionTemplate tx =
+                new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
+        UUID org = TestOrganizations.insert(TestDatabaseRoles.privilegedFixtureJdbc(POSTGRES));
 
+        // Inside a tenant-bound transaction, as the application always runs (b2-8 C4, V25), so
+        // what stops these is the missing privilege, not the missing tenant.
         for (String sql :
                 List.of(
                         "UPDATE audit_log SET action = 'TAMPERED'",
                         "DELETE FROM audit_log",
                         "TRUNCATE audit_log")) {
-            assertThatThrownBy(() -> appJdbc.execute(sql))
+            assertThatThrownBy(
+                            () -> {
+                                try (TenantContext.Scope tenant = TenantContext.open(org)) {
+                                    tx.executeWithoutResult(status -> appJdbc.execute(sql));
+                                }
+                            })
                     .as(sql)
                     .satisfies(
                             e ->

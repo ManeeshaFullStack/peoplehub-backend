@@ -30,6 +30,12 @@ class MfaPendingSecretRuntimeRoleTest {
 
     private Connection runtime;
 
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
+
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
         runtime = TestDatabaseRoles.runtimeConnection(postgres);
@@ -49,6 +55,7 @@ class MfaPendingSecretRuntimeRoleTest {
                         "Acme Corp",
                         "org-" + UUID.randomUUID(),
                         "Asia/Kolkata");
+        bound(org);
         String email = "jane-" + UUID.randomUUID() + "@example.com";
         UUID employee =
                 jdbc.queryForObject(

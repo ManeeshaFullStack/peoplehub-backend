@@ -32,6 +32,12 @@ class MfaRecoveryCodeTenantRuntimeRoleTest {
 
     private Connection runtime;
 
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
+
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
         runtime = TestDatabaseRoles.runtimeConnection(postgres);
@@ -96,7 +102,7 @@ class MfaRecoveryCodeTenantRuntimeRoleTest {
 
     @Test
     void theRuntimeRoleInsertsCodesWithTheirOrganization() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         long id = insertCode(org, employee);
@@ -111,7 +117,7 @@ class MfaRecoveryCodeTenantRuntimeRoleTest {
 
     @Test
     void theRuntimeRoleCanInvalidateACodeButNotRewriteIt() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         long id = insertCode(org, employee);
 
@@ -135,7 +141,7 @@ class MfaRecoveryCodeTenantRuntimeRoleTest {
 
     @Test
     void invalidatedAtCannotBeSuppliedOnInsert() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertDenied(
@@ -149,7 +155,7 @@ class MfaRecoveryCodeTenantRuntimeRoleTest {
 
     @Test
     void usedAndInvalidatedCodesAreNeverDeleted() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         insertCode(org, insertEmployee(org));
 
         assertDenied("DELETE FROM mfa_recovery_code");
@@ -158,9 +164,11 @@ class MfaRecoveryCodeTenantRuntimeRoleTest {
 
     @Test
     void theTenantBindingAppliesToTheRuntimeRoleToo() {
-        UUID org = insertOrganization();
-        UUID employeeOfAnother = insertEmployee(insertOrganization());
+        UUID org = bound(insertOrganization());
+        UUID employeeOfAnother = insertEmployee(bound(insertOrganization()));
 
+        // Bound to the row's own organization, so the composite foreign key is what refuses it.
+        bound(org);
         assertThatThrownBy(() -> insertCode(org, employeeOfAnother))
                 .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("23503"));
     }

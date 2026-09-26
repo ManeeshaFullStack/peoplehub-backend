@@ -31,6 +31,12 @@ class ActiveEmployeeLockRuntimeRoleTest {
 
     private Connection runtime;
 
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
+
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
         runtime = TestDatabaseRoles.runtimeConnection(postgres);
@@ -50,6 +56,7 @@ class ActiveEmployeeLockRuntimeRoleTest {
                                 + " VALUES ('Acme Corp', ?, 'Asia/Kolkata', 'ACTIVE') RETURNING id",
                         UUID.class,
                         "org-" + UUID.randomUUID());
+        bound(org);
         String email = "jane-" + UUID.randomUUID() + "@example.com";
         UUID employee =
                 jdbc.queryForObject(

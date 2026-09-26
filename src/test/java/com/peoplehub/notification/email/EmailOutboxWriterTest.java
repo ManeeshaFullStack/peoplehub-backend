@@ -3,6 +3,7 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
@@ -15,6 +16,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -46,12 +48,20 @@ class EmailOutboxWriterTest {
 
     private TransactionTemplate tx;
     private UUID org;
+    private TenantContext.Scope tenant;
 
     @BeforeEach
     void setUp() {
         tx = new TransactionTemplate(transactionManager);
         // b2-1 (V12): organization_id now has a real FK to organization(id).
         org = TestOrganizations.insert(jdbc);
+        // b2-8 C4 (V25): the tenant an authenticated request or a job would have bound.
+        tenant = TenantContext.open(org);
+    }
+
+    @AfterEach
+    void closeTenant() {
+        tenant.close();
     }
 
     private void enqueue(EmailMessage message) {
@@ -249,15 +259,18 @@ class EmailOutboxWriterTest {
                         pool.submit(
                                 () -> {
                                     start.await();
-                                    for (int i = 0; i < perWriter; i++) {
-                                        tx.executeWithoutResult(
-                                                status ->
-                                                        writer.enqueue(
-                                                                EmailMessage.builder(
-                                                                                org,
-                                                                                "jane@example.com",
-                                                                                "CONCURRENT_ENQUEUE")
-                                                                        .build()));
+                                    // The tenant is per thread (V25): each writer binds its own.
+                                    try (TenantContext.Scope scope = TenantContext.open(org)) {
+                                        for (int i = 0; i < perWriter; i++) {
+                                            tx.executeWithoutResult(
+                                                    status ->
+                                                            writer.enqueue(
+                                                                    EmailMessage.builder(
+                                                                                    org,
+                                                                                    "jane@example.com",
+                                                                                    "CONCURRENT_ENQUEUE")
+                                                                            .build()));
+                                        }
                                     }
                                     return null;
                                 }));

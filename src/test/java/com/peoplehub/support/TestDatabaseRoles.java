@@ -2,8 +2,10 @@ package com.peoplehub.support;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.UUID;
 import javax.sql.DataSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -36,6 +38,23 @@ public final class TestDatabaseRoles {
 
     public static Connection runtimeConnection(PostgreSQLContainer postgres) throws SQLException {
         return DriverManager.getConnection(postgres.getJdbcUrl(), RUNTIME_ROLE, RUNTIME_PASSWORD);
+    }
+
+    /**
+     * Binds a test's own, unpooled runtime-role connection to {@code organizationId} for the rest
+     * of its session (b2-8 C4, V25), so the tenant policies let it act on that organization's rows.
+     * Test-only, and only for a connection the test opened itself and closes: the application never
+     * sets the tenant for a session, only for a transaction (O1). Pass {@code null} to unbind.
+     */
+    public static void bindTenant(Connection runtime, UUID organizationId) {
+        try (PreparedStatement statement =
+                runtime.prepareStatement(
+                        "SELECT set_config('peoplehub.organization_id', ?, false)")) {
+            statement.setString(1, organizationId == null ? "" : organizationId.toString());
+            statement.executeQuery().close();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Could not bind the test connection's tenant", e);
+        }
     }
 
     public static Connection ownerConnection(PostgreSQLContainer postgres) throws SQLException {
