@@ -460,7 +460,24 @@ no longer counts. Step-up protected so far:
 - `POST /me/mfa/disable`: refused (409) while the policy requires MFA of the caller; otherwise clears the secret,
   invalidates the recovery codes and any open sign-in challenge, and audits `MFA_DISABLED`.
 
-Not built yet: changing the policy, selecting people, resetting another person's MFA, promotion and onboarding.
+**Administration (B2-7/1, B2-7/3, B2-7/12, B2-7/17, B2-7/18).** Each needs a fresh step-up; the organization is always
+the caller's own and another organization's employee id is the same 404 as an unknown one.
+
+- `PUT /organization/security/mfa-policy` with `{policy}` (Super Admin): audited `MFA_POLICY_CHANGED`. Everyone the
+  new policy newly requires to have MFA and who has not enrolled loses every session (`MFA_REQUIRED`), with no grace
+  period: their next sign-in is the enrollment step. The acting Super Admin keeps their current session; if the policy
+  now requires their MFA, they enroll before any protected action.
+- `PUT /super-admin/employees/{id}/mfa-required` with `{required}` (Super Admin): the selection for
+  `REQUIRED_FOR_SELECTED_USERS`. Settable under any policy; it takes effect (sessions ended as above) only under that
+  policy. Audited `MFA_SELECTION_CHANGED`.
+- `POST /admin/employees/{id}/mfa/reset`: an Admin resets an Employee's MFA, a Super Admin an Admin's or an Employee's;
+  never a Super Admin's or one's own. Clears the secrets, invalidates the recovery codes and open sign-in challenges,
+  ends every session (`MFA_RESET`); audited `MFA_RESET`.
+- `POST /super-admin/employees/{id}/promote-admin` (Super Admin): an active Employee becomes Admin and every session
+  ends (`ROLE_CHANGED`); audited `EMPLOYEE_PROMOTED`. MFA is not a precondition; if the policy requires it of Admins, the
+  next sign-in is the enrollment step. Demotion and granting Super Admin come with b3-1/b3-4.
+
+Not built yet: onboarding completion.
 
 ## Invitations
 

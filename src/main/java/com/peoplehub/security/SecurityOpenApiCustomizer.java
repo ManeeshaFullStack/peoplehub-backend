@@ -126,6 +126,39 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                             "409",
                             "MFA is not enabled."));
 
+    /** The same, for the organization MFA administration and promotion endpoints (b2-7). */
+    private static final Map<String, Map<String, String>> ADMIN_PROBLEM_RESPONSES =
+            Map.of(
+                    "/api/v1/organization/security/mfa-policy",
+                    Map.of(
+                            "400",
+                            "The policy is missing or not one of the five values.",
+                            "403",
+                            "Not a Super Admin, or no fresh step-up of this session"
+                                    + " (step-up-required, mfa-enrollment-required)."),
+                    "/api/v1/super-admin/employees/{id}/mfa-required",
+                    Map.of(
+                            "400", "The value is missing.",
+                            "403",
+                                    "Not a Super Admin, or no fresh step-up of this session"
+                                            + " (step-up-required, mfa-enrollment-required).",
+                            "404", "No such employee in the caller's organization."),
+                    "/api/v1/admin/employees/{id}/mfa/reset",
+                    Map.of(
+                            "403",
+                                    "The caller may not reset this person's MFA, or has no fresh"
+                                            + " step-up (step-up-required,"
+                                            + " mfa-enrollment-required).",
+                            "404", "No such employee in the caller's organization.",
+                            "409", "The employee has no MFA to reset."),
+                    "/api/v1/super-admin/employees/{id}/promote-admin",
+                    Map.of(
+                            "403",
+                                    "Not a Super Admin, the caller themselves, or no fresh step-up"
+                                            + " (step-up-required, mfa-enrollment-required).",
+                            "404", "No such employee in the caller's organization.",
+                            "409", "Only an active Employee can be promoted."));
+
     @Override
     public void customise(OpenAPI openApi) {
         if (openApi.getComponents() == null) {
@@ -149,7 +182,9 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
 
     private static void document(String path, PathItem item) {
         if (!PublicEndpoints.isPublicPath(path)) {
-            Map<String, String> problems = PROBLEM_RESPONSES.getOrDefault(path, Map.of());
+            Map<String, String> problems =
+                    PROBLEM_RESPONSES.getOrDefault(
+                            path, ADMIN_PROBLEM_RESPONSES.getOrDefault(path, Map.of()));
             for (Operation operation : item.readOperations()) {
                 requireToken(operation);
                 problems.forEach(

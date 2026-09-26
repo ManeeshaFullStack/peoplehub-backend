@@ -12,8 +12,9 @@ import org.springframework.stereotype.Component;
 
 /**
  * Plain JDBC access to the employee columns deactivation and reactivation change (b2-6, B2-6/10,
- * 11, 13): {@code status} and {@code exit_date} only. Every query is qualified by the caller's
- * organization, so another organization's employee id finds nothing (Spec 15.1, D22).
+ * 11, 13): {@code status} and {@code exit_date}; and, for promotion (b2-7, B2-7/18), {@code role}.
+ * Every query is qualified by the caller's organization, so another organization's employee id
+ * finds nothing (Spec 15.1, D22).
  */
 @Component
 class EmployeeLifecycleStore {
@@ -31,6 +32,10 @@ class EmployeeLifecycleStore {
 
     private static final String REACTIVATE =
             "UPDATE employee SET status = ?, exit_date = NULL WHERE id = ? AND organization_id = ?";
+
+    /** b2-7 (B2-7/18): Employee to Admin. */
+    private static final String PROMOTE_TO_ADMIN =
+            "UPDATE employee SET role = 'ADMIN' WHERE id = ? AND organization_id = ?";
 
     private final JdbcClient jdbc;
 
@@ -66,6 +71,10 @@ class EmployeeLifecycleStore {
 
     void reactivate(UUID employeeId, UUID organizationId, String status) {
         jdbc.sql(REACTIVATE).param(status).param(employeeId).param(organizationId).update();
+    }
+
+    void promoteToAdmin(UUID employeeId, UUID organizationId) {
+        jdbc.sql(PROMOTE_TO_ADMIN).param(employeeId).param(organizationId).update();
     }
 
     record Target(

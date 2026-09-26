@@ -16,7 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
  * invalidated_at}, and a used code keeps its {@code used_at}. Runs in the caller's transaction.
  */
 @Component
-class RecoveryCodeStore {
+public class RecoveryCodeStore {
 
     private static final String INVALIDATE_UNUSED =
             "UPDATE mfa_recovery_code SET invalidated_at = ?"
@@ -39,7 +39,7 @@ class RecoveryCodeStore {
 
     /** Makes every unused code unusable; returns how many. */
     @Transactional(propagation = Propagation.MANDATORY)
-    int invalidateUnused(UUID organizationId, UUID employeeId, Timestamp at) {
+    public int invalidateUnused(UUID organizationId, UUID employeeId, Timestamp at) {
         return jdbc.sql(INVALIDATE_UNUSED)
                 .param(at)
                 .param(employeeId)

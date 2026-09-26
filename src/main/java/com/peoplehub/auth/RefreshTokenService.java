@@ -241,6 +241,49 @@ public class RefreshTokenService {
                 clock.instant());
     }
 
+    /**
+     * Ends the sessions of an employee the organization's MFA policy or selection newly requires to
+     * have MFA, who has not enrolled (b2-7, B2-7/3): their refresh tokens are revoked ({@code
+     * MFA_REQUIRED}), so the requirement applies at their next sign-in. {@code keptSessionId}, when
+     * not null, is the acting Super Admin's own current session, which stays. Returns how many
+     * tokens were revoked; the caller locks the employee row first and audits the change.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int endSessionsWhenMfaBecomesRequired(
+            UUID organizationId, UUID employeeId, UUID keptSessionId) {
+        if (keptSessionId == null) {
+            return store.revokeEmployee(
+                    employeeId, organizationId, RevokeReason.MFA_REQUIRED, clock.instant());
+        }
+        return store.revokeEmployeeExceptFamily(
+                employeeId,
+                organizationId,
+                keptSessionId,
+                RevokeReason.MFA_REQUIRED,
+                clock.instant());
+    }
+
+    /**
+     * Ends every session of an employee whose MFA was reset by an authorized person (b2-7,
+     * B2-7/12): {@code MFA_RESET}. Returns how many tokens were revoked; the caller audits.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int endAllSessionsAfterMfaReset(UUID organizationId, UUID employeeId) {
+        return store.revokeEmployee(
+                employeeId, organizationId, RevokeReason.MFA_RESET, clock.instant());
+    }
+
+    /**
+     * Ends every session of a promoted employee (b2-7, B2-7/18): {@code ROLE_CHANGED}, so the new
+     * role takes effect at their next sign-in. Returns how many tokens were revoked; the caller
+     * audits.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int endAllSessionsAfterRoleChange(UUID organizationId, UUID employeeId) {
+        return store.revokeEmployee(
+                employeeId, organizationId, RevokeReason.ROLE_CHANGED, clock.instant());
+    }
+
     private void audit(StoredRefreshToken token, String action, InetAddress ip) {
         auditWriter.append(
                 AuditEvent.builder(token.organizationId(), action)
