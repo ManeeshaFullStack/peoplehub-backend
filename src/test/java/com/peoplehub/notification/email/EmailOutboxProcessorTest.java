@@ -2,6 +2,7 @@ package com.peoplehub.notification.email;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.peoplehub.common.database.TenantTransactions;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.TestOrganizations;
 import jakarta.mail.SendFailedException;
@@ -13,6 +14,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -21,6 +23,7 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.Supplier;
 import net.javacrumbs.shedlock.core.LockConfiguration;
 import net.javacrumbs.shedlock.core.LockProvider;
 import net.javacrumbs.shedlock.core.SimpleLock;
@@ -32,6 +35,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.MailSendException;
+import org.springframework.transaction.PlatformTransactionManager;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -45,6 +49,8 @@ class EmailOutboxProcessorTest {
     @Autowired private JdbcClient jdbc;
     @Autowired private JdbcTemplate jdbcTemplate;
     @Autowired private EmailSuppressionService suppressionService;
+    @Autowired private TenantTransactions tenantTransactions;
+    @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private LockProvider lockProvider;
 
     private SimpleLock jobLock;
@@ -98,11 +104,68 @@ class EmailOutboxProcessorTest {
         }
     }
 
+    /**
+     * b2-8 (O1, O4): every database step of a row (claim, load, record the result) runs in its own
+     * transaction whose PostgreSQL tenant setting is that row's organization, and never another's.
+     */
+    @Test
+    void everyStepOfARowRunsInATransactionBoundToThatRowsOrganization() {
+        long first = insertPending();
+        long second = insertPending();
+        UUID firstOrg = organizationOf(first);
+        UUID secondOrg = organizationOf(second);
+        assertThat(firstOrg).isNotEqualTo(secondOrg);
+        List<String[]> steps = new ArrayList<>();
+        TenantTransactions recording =
+                new TenantTransactions(transactionManager) {
+                    @Override
+                    public <T> T inTransaction(UUID organizationId, Supplier<T> work) {
+                        return super.inTransaction(
+                                organizationId,
+                                () -> {
+                                    steps.add(
+                                            new String[] {
+                                                organizationId.toString(),
+                                                jdbc.sql(
+                                                                "SELECT current_setting("
+                                                                        + "'peoplehub.organization_id',"
+                                                                        + " true)")
+                                                        .query(String.class)
+                                                        .single()
+                                            });
+                                    return work.get();
+                                });
+                    }
+                };
+
+        int processed =
+                processor(FakeSender.alwaysSucceeds(), Duration.ofMinutes(5), recording).run();
+
+        assertThat(processed).isEqualTo(2);
+        assertThat(row(first).get("status")).isEqualTo("SENT");
+        assertThat(row(second).get("status")).isEqualTo("SENT");
+        // claim, load and mark-sent for each row: three transactions per row, each bound to it.
+        assertThat(steps).hasSize(6);
+        assertThat(steps).allSatisfy(step -> assertThat(step[1]).isEqualTo(step[0]));
+        assertThat(steps.stream().filter(s -> s[0].equals(firstOrg.toString()))).hasSize(3);
+        assertThat(steps.stream().filter(s -> s[0].equals(secondOrg.toString()))).hasSize(3);
+    }
+
+    private UUID organizationOf(long id) {
+        return jdbcTemplate.queryForObject(
+                "SELECT organization_id FROM email_outbox WHERE id = ?", UUID.class, id);
+    }
+
     private EmailOutboxProcessor processor(EmailSender sender) {
         return processor(sender, Duration.ofMinutes(5));
     }
 
     private EmailOutboxProcessor processor(EmailSender sender, Duration staleClaimAfter) {
+        return processor(sender, staleClaimAfter, tenantTransactions);
+    }
+
+    private EmailOutboxProcessor processor(
+            EmailSender sender, Duration staleClaimAfter, TenantTransactions tenants) {
         return new EmailOutboxProcessor(
                 jdbc,
                 clock,
@@ -112,7 +175,8 @@ class EmailOutboxProcessorTest {
                 new RetryPolicy(clock, List.of(Duration.ofMinutes(1), Duration.ofMinutes(5))),
                 100,
                 staleClaimAfter,
-                suppressionService);
+                suppressionService,
+                tenants);
     }
 
     private long insertRow(String status, int attempts, Instant nextAttemptAt) {
@@ -346,7 +410,8 @@ class EmailOutboxProcessorTest {
                         new RetryPolicy(clock, List.of(Duration.ofMinutes(1))),
                         2, // batch size
                         Duration.ofMinutes(5),
-                        suppressionService);
+                        suppressionService,
+                        tenantTransactions);
 
         int processed = small.run();
 

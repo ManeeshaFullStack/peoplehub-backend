@@ -1,10 +1,13 @@
 package com.peoplehub.notification.email;
 
+import com.peoplehub.common.database.TenantTransactions;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
+import java.util.function.Supplier;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mail.MailException;
 
@@ -41,6 +44,7 @@ public class EmailOutboxProcessor {
     private final int batchSize;
     private final Duration staleClaimAfter;
     private final EmailSuppressionService suppressionService;
+    private final TenantTransactions tenantTransactions;
 
     public EmailOutboxProcessor(
             JdbcClient jdbc,
@@ -51,7 +55,8 @@ public class EmailOutboxProcessor {
             RetryPolicy retryPolicy,
             int batchSize,
             Duration staleClaimAfter,
-            EmailSuppressionService suppressionService) {
+            EmailSuppressionService suppressionService,
+            TenantTransactions tenantTransactions) {
         this.jdbc = jdbc;
         this.clock = clock;
         this.sender = sender;
@@ -61,6 +66,7 @@ public class EmailOutboxProcessor {
         this.batchSize = batchSize;
         this.staleClaimAfter = staleClaimAfter;
         this.suppressionService = suppressionService;
+        this.tenantTransactions = tenantTransactions;
     }
 
     /**
@@ -69,15 +75,15 @@ public class EmailOutboxProcessor {
     public int run() {
         reclaimStaleClaims();
         int processed = 0;
-        for (long id : selectDueIds()) {
+        for (Due due : selectDue()) {
             if (Thread.currentThread().isInterrupted()) {
                 // A row not yet claimed is untouched and safe: the next run (or this job's own next
                 // catch-up) will pick it up. Only an already-claimed row needs the stale-claim
                 // recovery above.
                 break;
             }
-            if (claim(id)) {
-                processOne(id);
+            if (inTenant(due.organizationId(), () -> claim(due.id()))) {
+                processOne(due.id(), due.organizationId());
                 processed++;
             }
         }
@@ -92,15 +98,41 @@ public class EmailOutboxProcessor {
                 .update();
     }
 
-    private List<Long> selectDueIds() {
+    /**
+     * The due rows of every organization, with each row's organization. Like {@link
+     * #reclaimStaleClaims}, this one statement spans all tenants and runs outside a tenant
+     * transaction; b2-8's owner-defined claim function replaces both (owner decision O4).
+     * Everything done to a single row afterwards runs in a transaction bound to that row's
+     * organization.
+     */
+    private List<Due> selectDue() {
         return jdbc.sql(
-                        "SELECT id FROM email_outbox WHERE status IN ('PENDING', 'RETRYING')"
+                        "SELECT id, organization_id FROM email_outbox"
+                                + " WHERE status IN ('PENDING', 'RETRYING')"
                                 + " AND (next_attempt_at IS NULL OR next_attempt_at <= ?)"
                                 + " ORDER BY id LIMIT ?")
                 .param(Timestamp.from(clock.instant()))
                 .param(batchSize)
-                .query(Long.class)
+                .query(
+                        (rs, rowNum) ->
+                                new Due(
+                                        rs.getLong("id"),
+                                        rs.getObject("organization_id", UUID.class)))
                 .list();
+    }
+
+    /** Runs one statement group for a row in a transaction bound to the row's organization. */
+    private <T> T inTenant(UUID organizationId, Supplier<T> work) {
+        return tenantTransactions.inTransaction(organizationId, work);
+    }
+
+    private void inTenant(UUID organizationId, Runnable work) {
+        tenantTransactions.inTransaction(
+                organizationId,
+                () -> {
+                    work.run();
+                    return null;
+                });
     }
 
     /**
@@ -116,13 +148,19 @@ public class EmailOutboxProcessor {
         return updated == 1;
     }
 
-    private void processOne(long id) {
-        Row row = loadRow(id);
+    /**
+     * Loads, renders, sends and records one claimed row. Every database step runs in its own short
+     * transaction bound to the row's organization; the SMTP call itself runs outside any
+     * transaction (claim before send). The global suppression list is outside tenant scope by
+     * design (b1-4, O4).
+     */
+    private void processOne(long id, UUID organizationId) {
+        Row row = inTenant(organizationId, () -> loadRow(id));
         // b1-4 suppression gate: checked before rendering or sending, so a known-bad address never
         // even gets a template built for it. Surgical addition to b1-2's own flow -- see
         // EmailSuppressionService for what feeds this list.
         if (suppressionService.isSuppressed(row.recipient())) {
-            markFailedWithoutAttempt(id, EmailErrorCode.SUPPRESSED);
+            inTenant(organizationId, () -> markFailedWithoutAttempt(id, EmailErrorCode.SUPPRESSED));
             return;
         }
         EmailTemplateRenderer.Rendered rendered;
@@ -131,25 +169,31 @@ public class EmailOutboxProcessor {
         } catch (TemplateRenderException e) {
             // Permanent, no retry, and no send was ever attempted: attempts is left untouched, only
             // real send attempts (success or MailException failure) count towards it.
-            markFailedWithoutAttempt(id, EmailErrorCode.TEMPLATE_ERROR);
+            inTenant(
+                    organizationId,
+                    () -> markFailedWithoutAttempt(id, EmailErrorCode.TEMPLATE_ERROR));
             return;
         }
         try {
             String providerMessageId =
                     sender.send(row.recipient(), rendered.subject(), rendered.body());
-            markSent(id, providerMessageId);
+            inTenant(organizationId, () -> markSent(id, providerMessageId));
         } catch (EmailConfigurationException e) {
             // Permanent, no retry, no attempt counted: an operator problem, not a per-email one,
             // and
             // SmtpEmailSender throws this before any network call.
-            markFailedWithoutAttempt(id, EmailErrorCode.CONFIGURATION_ERROR);
+            inTenant(
+                    organizationId,
+                    () -> markFailedWithoutAttempt(id, EmailErrorCode.CONFIGURATION_ERROR));
         } catch (MailException e) {
-            handleSendFailure(id, row.recipient(), row.attempts(), classifier.classify(e));
+            handleSendFailure(
+                    id, organizationId, row.recipient(), row.attempts(), classifier.classify(e));
         }
     }
 
     private void handleSendFailure(
             long id,
+            UUID organizationId,
             String recipient,
             int attemptsBefore,
             EmailFailureClassifier.Classification classification) {
@@ -167,9 +211,15 @@ public class EmailOutboxProcessor {
                     && classification.code() == EmailErrorCode.ADDRESS_REJECTED) {
                 suppressionService.suppress(recipient, SuppressionReason.ADDRESS_REJECTED);
             }
-            markFailed(id, classification.code());
+            inTenant(organizationId, () -> markFailed(id, classification.code()));
         } else {
-            markRetrying(id, retryPolicy.nextAttemptAt(attemptsMade), classification.code());
+            inTenant(
+                    organizationId,
+                    () ->
+                            markRetrying(
+                                    id,
+                                    retryPolicy.nextAttemptAt(attemptsMade),
+                                    classification.code()));
         }
     }
 
@@ -230,4 +280,6 @@ public class EmailOutboxProcessor {
     }
 
     private record Row(String recipient, String type, String payloadJson, int attempts) {}
+
+    private record Due(long id, UUID organizationId) {}
 }

@@ -1,5 +1,6 @@
 package com.peoplehub.security.principal;
 
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.common.logging.OrganizationId;
 import jakarta.servlet.FilterChain;
@@ -14,7 +15,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 /**
  * Once a request is authenticated, records who it is in the logging context (b2-3, B2-3/18): the
  * actor id becomes the employee id and the organization id is added, so every log line and Sentry
- * event of the request carries them. Runs inside the security chain, right after bearer-token
+ * event of the request carries them; and (b2-8) opens the organization as the {@link TenantContext}
+ * of every transaction the request begins. Runs inside the security chain, right after bearer-token
  * authentication; {@code ActorIdFilter} clears both at the end of the request.
  *
  * <p>Deliberately not a Spring bean: as a bean it would also be registered as a servlet filter and
@@ -31,6 +33,12 @@ public class AuthenticatedContextFilter extends OncePerRequestFilter {
                 && authentication.getPrincipal() instanceof AuthenticatedPrincipal principal) {
             ActorId.set(principal.employeeId().toString());
             OrganizationId.set(principal.organizationId());
+            // b2-8: the principal's organization is the tenant of every transaction this request
+            // begins; the scope ends with the request, on every path.
+            try (TenantContext.Scope scope = TenantContext.open(principal.organizationId())) {
+                chain.doFilter(request, response);
+            }
+            return;
         }
         chain.doFilter(request, response);
     }
