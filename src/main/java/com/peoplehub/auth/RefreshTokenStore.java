@@ -21,12 +21,13 @@ class RefreshTokenStore {
                     + " VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id";
 
     private static final String SELECT_OWNER =
-            "SELECT employee_id, organization_id FROM refresh_token WHERE token_hash = ?";
+            "SELECT employee_id, organization_id FROM refresh_token"
+                    + " WHERE organization_id = ? AND token_hash = ?";
 
     private static final String SELECT_FOR_UPDATE =
             "SELECT id, organization_id, employee_id, family_id, expires_at, absolute_expires_at,"
-                    + " revoked, revoke_reason, device_label FROM refresh_token WHERE token_hash = ?"
-                    + " FOR UPDATE";
+                    + " revoked, revoke_reason, device_label FROM refresh_token"
+                    + " WHERE organization_id = ? AND token_hash = ? FOR UPDATE";
 
     private static final String REVOKE_ROTATED =
             "UPDATE refresh_token SET revoked = true, revoked_at = ?, revoke_reason = 'ROTATED',"
@@ -75,8 +76,9 @@ class RefreshTokenStore {
      * Whose token this hash is, read without a lock, so a refresh can lock the employee row before
      * the token row (the lock order {@link ActiveEmployeeLock} describes).
      */
-    Optional<Owner> owner(String tokenHash) {
+    Optional<Owner> owner(UUID organizationId, String tokenHash) {
         return jdbc.sql(SELECT_OWNER)
+                .param(organizationId)
                 .param(tokenHash)
                 .query(
                         (rs, rowNum) ->
@@ -90,8 +92,9 @@ class RefreshTokenStore {
      * The token with this hash, row-locked until the transaction ends, so two refreshes of the same
      * token run one after the other: the second one sees the first one's revocation (B2-3/7).
      */
-    Optional<StoredRefreshToken> findForUpdate(String tokenHash) {
+    Optional<StoredRefreshToken> findForUpdate(UUID organizationId, String tokenHash) {
         return jdbc.sql(SELECT_FOR_UPDATE)
+                .param(organizationId)
                 .param(tokenHash)
                 .query(
                         (rs, rowNum) ->

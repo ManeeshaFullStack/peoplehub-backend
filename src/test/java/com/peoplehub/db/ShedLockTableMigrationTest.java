@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -20,7 +21,7 @@ class ShedLockTableMigrationTest {
             "INSERT INTO shedlock(name, lock_until, locked_at, locked_by) VALUES (?, "
                     + "timezone('utc', now()), timezone('utc', now()), 'test')";
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     @Test
     void v2AppliesCleanly() {

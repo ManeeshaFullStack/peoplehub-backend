@@ -1,5 +1,6 @@
 package com.peoplehub.security.principal;
 
+import com.peoplehub.common.database.TenantTransactions;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.util.Optional;
@@ -30,20 +31,31 @@ public class PrincipalStatusQuery {
 
     private final JdbcClient jdbc;
     private final Clock clock;
+    private final TenantTransactions tenantTransactions;
 
-    public PrincipalStatusQuery(JdbcClient jdbc, Clock clock) {
+    public PrincipalStatusQuery(
+            JdbcClient jdbc, Clock clock, TenantTransactions tenantTransactions) {
         this.jdbc = jdbc;
         this.clock = clock;
+        this.tenantTransactions = tenantTransactions;
     }
 
-    /** The employee's current role, or empty when the token must not be honoured any more. */
+    /**
+     * The employee's current role, or empty when the token must not be honoured any more. Runs in
+     * its own read-only transaction bound to the token's organization (b2-8, O1): the claim is only
+     * trusted because the token's signature was verified first, and the query itself is also
+     * qualified by that organization.
+     */
     public Optional<String> activeRole(UUID employeeId, UUID organizationId, UUID sessionId) {
-        return jdbc.sql(SELECT_ACTIVE_ROLE)
-                .param(employeeId)
-                .param(organizationId)
-                .param(sessionId)
-                .param(Timestamp.from(clock.instant()))
-                .query(String.class)
-                .optional();
+        return tenantTransactions.inReadOnlyTransaction(
+                organizationId,
+                () ->
+                        jdbc.sql(SELECT_ACTIVE_ROLE)
+                                .param(employeeId)
+                                .param(organizationId)
+                                .param(sessionId)
+                                .param(Timestamp.from(clock.instant()))
+                                .query(String.class)
+                                .optional());
     }
 }

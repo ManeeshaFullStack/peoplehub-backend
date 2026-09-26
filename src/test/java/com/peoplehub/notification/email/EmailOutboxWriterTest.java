@@ -3,7 +3,9 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,6 +16,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,17 +39,29 @@ class EmailOutboxWriterTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private EmailOutboxWriter writer;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
+
+    // Statements that are part of the business transaction run on the application's own
+    // connection, as the runtime role; the fixture connection is outside that transaction.
+    @Autowired private JdbcTemplate applicationJdbc;
     @Autowired private PlatformTransactionManager transactionManager;
 
     private TransactionTemplate tx;
     private UUID org;
+    private TenantContext.Scope tenant;
 
     @BeforeEach
     void setUp() {
         tx = new TransactionTemplate(transactionManager);
         // b2-1 (V12): organization_id now has a real FK to organization(id).
         org = TestOrganizations.insert(jdbc);
+        // b2-8 C4 (V25): the tenant an authenticated request or a job would have bound.
+        tenant = TenantContext.open(org);
+    }
+
+    @AfterEach
+    void closeTenant() {
+        tenant.close();
     }
 
     private void enqueue(EmailMessage message) {
@@ -178,7 +193,7 @@ class EmailOutboxWriterTest {
 
     /** Stands in for a business change; any table the transaction writes to would do. */
     private void businessChange(String name) {
-        jdbc.update(
+        applicationJdbc.update(
                 "INSERT INTO shedlock(name, lock_until, locked_at, locked_by) VALUES (?,"
                         + " timezone('utc', now()), timezone('utc', now()), 'outbox-writer-test')",
                 name);
@@ -200,7 +215,7 @@ class EmailOutboxWriterTest {
                                     EmailMessage.builder(
                                                     org, "jane@example.com", "SOMETHING_HAPPENED")
                                             .build());
-                            return jdbc.queryForObject(
+                            return applicationJdbc.queryForObject(
                                     "SELECT created_at = now() FROM email_outbox"
                                             + " WHERE organization_id = ?",
                                     Boolean.class,
@@ -244,15 +259,18 @@ class EmailOutboxWriterTest {
                         pool.submit(
                                 () -> {
                                     start.await();
-                                    for (int i = 0; i < perWriter; i++) {
-                                        tx.executeWithoutResult(
-                                                status ->
-                                                        writer.enqueue(
-                                                                EmailMessage.builder(
-                                                                                org,
-                                                                                "jane@example.com",
-                                                                                "CONCURRENT_ENQUEUE")
-                                                                        .build()));
+                                    // The tenant is per thread (V25): each writer binds its own.
+                                    try (TenantContext.Scope scope = TenantContext.open(org)) {
+                                        for (int i = 0; i < perWriter; i++) {
+                                            tx.executeWithoutResult(
+                                                    status ->
+                                                            writer.enqueue(
+                                                                    EmailMessage.builder(
+                                                                                    org,
+                                                                                    "jane@example.com",
+                                                                                    "CONCURRENT_ENQUEUE")
+                                                                            .build()));
+                                        }
                                     }
                                     return null;
                                 }));

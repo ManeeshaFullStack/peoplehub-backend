@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import com.peoplehub.security.SecureTokens;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.MutableClock;
+import com.peoplehub.support.PrivilegedFixture;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -50,7 +51,7 @@ class MfaEndToEndTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private MutableClock clock;
     @Autowired private SecureTokens secureTokens;
 

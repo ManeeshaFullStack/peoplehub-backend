@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.sql.Connection;
@@ -39,9 +40,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class EmployeeRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -90,7 +97,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void insertOnTheGrantedColumnsSucceedsAndSelectSucceeds() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         String email = uniqueEmail();
         UUID id;
         try (PreparedStatement ps =
@@ -121,7 +128,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void idCannotBeSuppliedOnInsertEvenThoughItHasADefault() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         String email = uniqueEmail();
 
         assertDenied(
@@ -139,7 +146,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void employeeCodeCannotBeUpdatedEvenThoughInsertIsGranted() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID id = insertEmployee(org);
 
         assertDenied("UPDATE employee SET employee_code = 'NEW-CODE' WHERE id = '" + id + "'");
@@ -147,7 +154,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void emailCannotBeUpdated() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID id = insertEmployee(org);
 
         // role became updatable in b2-7 (V19, promotion): MfaPolicyRuntimeRoleTest.
@@ -158,7 +165,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void passwordHashMfaFieldsWelcomeSeenAtAndDepartmentCanBeUpdated() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID id = insertEmployee(org);
 
         try (PreparedStatement ps =
@@ -183,7 +190,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         insertEmployee(org);
 
         assertDenied("DELETE FROM employee");
@@ -192,7 +199,7 @@ class EmployeeRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleToo() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
 
         assertThatThrownBy(
                         () -> {

@@ -1,5 +1,6 @@
 package com.peoplehub.notification.email;
 
+import com.peoplehub.common.database.TenantTransactions;
 import java.time.Clock;
 import java.time.Duration;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,23 +42,23 @@ public class EmailSendingConfig {
     @Bean
     public EmailOutboxProcessor emailOutboxProcessor(
             JdbcClient jdbc,
-            Clock clock,
             EmailSender sender,
             EmailTemplateRenderer renderer,
             EmailFailureClassifier classifier,
             RetryPolicy retryPolicy,
             @Value("${peoplehub.email.outbox.batch-size:100}") int batchSize,
             @Value("${peoplehub.email.outbox.stale-claim-after:PT5M}") String staleClaimAfter,
-            EmailSuppressionService suppressionService) {
+            EmailSuppressionService suppressionService,
+            TenantTransactions tenantTransactions) {
         return new EmailOutboxProcessor(
                 jdbc,
-                clock,
                 sender,
                 renderer,
                 classifier,
                 retryPolicy,
                 batchSize,
                 Duration.parse(staleClaimAfter),
-                suppressionService);
+                suppressionService,
+                tenantTransactions);
     }
 }

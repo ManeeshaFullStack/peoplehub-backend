@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.peoplehub.security.jwt.AccessTokenIssuer;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import com.peoplehub.support.TestJwtKeys;
 import com.peoplehub.support.TestTokens;
@@ -41,7 +42,7 @@ class AccessTokenAuthenticationTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private AccessTokenIssuer issuer;
 
     private TestIdentities.Employee employee;

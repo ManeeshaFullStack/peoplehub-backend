@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.sql.Connection;
@@ -30,9 +31,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class PasswordResetTokenRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -99,7 +106,7 @@ class PasswordResetTokenRuntimeRoleTest {
 
     @Test
     void insertOnTheGrantedColumnsAndSelectSucceed() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID id = insertToken(org, insertEmployee(org));
 
         try (PreparedStatement ps =
@@ -115,7 +122,7 @@ class PasswordResetTokenRuntimeRoleTest {
 
     @Test
     void generatedAndLifecycleColumnsCannotBeSuppliedOnInsert() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         String base =
                 "INSERT INTO password_reset_token (organization_id, employee_id, token_hash,"
@@ -133,7 +140,7 @@ class PasswordResetTokenRuntimeRoleTest {
 
     @Test
     void consumedAndInvalidatedCanBeSetButNothingElseChanged() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         UUID consumed = insertToken(org, employee);
         UUID invalidated = insertToken(org, employee);
@@ -174,7 +181,7 @@ class PasswordResetTokenRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         insertToken(org, insertEmployee(org));
 
         assertDenied("DELETE FROM password_reset_token");
@@ -183,9 +190,11 @@ class PasswordResetTokenRuntimeRoleTest {
 
     @Test
     void theConstraintsApplyToTheRuntimeRoleToo() {
-        UUID org = insertOrganization();
-        UUID employeeOfAnother = insertEmployee(insertOrganization());
+        UUID org = bound(insertOrganization());
+        UUID employeeOfAnother = insertEmployee(bound(insertOrganization()));
 
+        // Bound to the row's own organization, so the composite foreign key is what refuses it.
+        bound(org);
         assertThatThrownBy(() -> insertToken(org, employeeOfAnother))
                 .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("23503"));
     }

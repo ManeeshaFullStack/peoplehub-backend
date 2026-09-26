@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import java.util.List;
 import java.util.Map;
@@ -43,7 +44,7 @@ class MfaPolicyMigrationTest {
                     "MFA_RESET",
                     "ROLE_CHANGED");
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private UUID insertOrganization() {
         return jdbc.queryForObject(

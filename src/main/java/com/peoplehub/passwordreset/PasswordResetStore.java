@@ -24,7 +24,7 @@ class PasswordResetStore {
     private static final String SELECT_ACTIVE_ACCOUNT_FOR_UPDATE =
             "SELECT e.id, e.organization_id, e.name, e.email, o.login_key_normalized"
                     + " FROM organization o JOIN employee e ON e.organization_id = o.id"
-                    + " WHERE o.login_key_normalized = ? AND e.email_normalized = ?"
+                    + " WHERE o.id = ? AND o.login_key_normalized = ? AND e.email_normalized = ?"
                     + " AND o.status = 'ACTIVE' AND e.status = 'ACTIVE'"
                     + " FOR UPDATE OF e";
 
@@ -54,7 +54,7 @@ class PasswordResetStore {
                     + " JOIN employee e ON e.organization_id = t.organization_id"
                     + " AND e.id = t.employee_id"
                     + " JOIN organization o ON o.id = t.organization_id"
-                    + " WHERE t.token_hash = ?"
+                    + " WHERE t.organization_id = ? AND t.token_hash = ?"
                     + " FOR UPDATE OF t, e";
 
     private static final String CONSUME =
@@ -76,8 +76,10 @@ class PasswordResetStore {
      * The active account with this login key and email, row-locked until the transaction ends, so
      * two parallel requests for one account are throttled one after the other.
      */
-    Optional<Account> activeAccountForUpdate(String loginKey, String emailNormalized) {
+    Optional<Account> activeAccountForUpdate(
+            UUID organizationId, String loginKey, String emailNormalized) {
         return jdbc.sql(SELECT_ACTIVE_ACCOUNT_FOR_UPDATE)
+                .param(organizationId)
                 .param(loginKey)
                 .param(emailNormalized)
                 .query(
@@ -123,8 +125,9 @@ class PasswordResetStore {
     }
 
     /** The reset with this token hash and its employee, both row-locked. */
-    Optional<Reset> byTokenHashForUpdate(String tokenHash) {
+    Optional<Reset> byTokenHashForUpdate(UUID organizationId, String tokenHash) {
         return jdbc.sql(SELECT_TOKEN_FOR_UPDATE)
+                .param(organizationId)
                 .param(tokenHash)
                 .query(PasswordResetStore::reset)
                 .optional();

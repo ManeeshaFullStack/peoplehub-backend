@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestOrganizations;
 import java.sql.Timestamp;
@@ -33,7 +34,7 @@ class OrganizationVerificationTokenMigrationTest {
             "INSERT INTO organization_verification_token (organization_id, token_hash, expires_at)"
                     + " VALUES (?, ?, ?)";
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private static Timestamp inOneDay() {
         return Timestamp.from(Instant.now().plus(24, ChronoUnit.HOURS));

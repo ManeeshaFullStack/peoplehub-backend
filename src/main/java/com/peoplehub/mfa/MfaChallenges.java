@@ -1,5 +1,6 @@
 package com.peoplehub.mfa;
 
+import com.peoplehub.common.database.PreTenantResolver;
 import com.peoplehub.security.SecureTokens;
 import java.net.InetAddress;
 import java.sql.Timestamp;
@@ -77,10 +78,16 @@ public class MfaChallenges {
 
     private final JdbcClient jdbc;
     private final SecureTokens secureTokens;
+    private final PreTenantResolver preTenantResolver;
     private final Clock clock;
 
-    public MfaChallenges(JdbcClient jdbc, SecureTokens secureTokens, Clock clock) {
+    public MfaChallenges(
+            JdbcClient jdbc,
+            SecureTokens secureTokens,
+            PreTenantResolver preTenantResolver,
+            Clock clock) {
         this.jdbc = jdbc;
+        this.preTenantResolver = preTenantResolver;
         this.secureTokens = secureTokens;
         this.clock = clock;
     }
@@ -117,7 +124,18 @@ public class MfaChallenges {
         if (rawToken == null || rawToken.isBlank()) {
             return Optional.empty();
         }
-        return select("token_hash = ?", secureTokens.hash(rawToken), purpose, false);
+        String tokenHash = secureTokens.hash(rawToken);
+        // The challenge's organization first (V24), binding this transaction to it (b2-8, O3).
+        return preTenantResolver
+                .bindByMfaChallenge(tokenHash)
+                .flatMap(
+                        organizationId ->
+                                select(
+                                        "organization_id = ? AND token_hash = ?",
+                                        purpose,
+                                        false,
+                                        organizationId,
+                                        tokenHash));
     }
 
     /**
@@ -126,7 +144,12 @@ public class MfaChallenges {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public Optional<Challenge> lockOpen(Challenge challenge) {
-        return select("id = ?", challenge.id(), challenge.purpose(), true);
+        return select(
+                "organization_id = ? AND id = ?",
+                challenge.purpose(),
+                true,
+                challenge.organizationId(),
+                challenge.id());
     }
 
     /** Marks the challenge completed. */
@@ -169,9 +192,14 @@ public class MfaChallenges {
         return true;
     }
 
-    private Optional<Challenge> select(String where, Object key, Purpose purpose, boolean lock) {
-        return jdbc.sql(String.format(SELECT_OPEN, where) + (lock ? " FOR UPDATE" : ""))
-                .param(key)
+    private Optional<Challenge> select(
+            String where, Purpose purpose, boolean lock, Object... keys) {
+        JdbcClient.StatementSpec statement =
+                jdbc.sql(String.format(SELECT_OPEN, where) + (lock ? " FOR UPDATE" : ""));
+        for (Object key : keys) {
+            statement = statement.param(key);
+        }
+        return statement
                 .param(purpose.name())
                 .param(now())
                 .query(

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestcontainersConfiguration;
@@ -38,7 +39,7 @@ class RefreshTokenRotationMigrationTest {
             "INSERT INTO refresh_token (organization_id, employee_id, token_hash, family_id,"
                     + " expires_at, absolute_expires_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id";
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private UUID insertOrganization() {
         return jdbc.queryForObject(

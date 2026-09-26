@@ -12,6 +12,7 @@ import com.nimbusds.jwt.SignedJWT;
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.MutableClock;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -50,7 +51,7 @@ class ChangePasswordTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private MutableClock clock;
     @MockitoSpyBean private PasswordHasher passwordHasher;
 

@@ -4,8 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.common.api.correlation.CorrelationId;
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -43,11 +45,16 @@ class AuditWriterTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private AuditWriter writer;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
+
+    // Statements that are part of the business transaction run on the application's own
+    // connection, as the runtime role; the fixture connection is outside that transaction.
+    @Autowired private JdbcTemplate applicationJdbc;
     @Autowired private PlatformTransactionManager transactionManager;
 
     private TransactionTemplate tx;
     private UUID org;
+    private TenantContext.Scope tenant;
 
     @BeforeEach
     void setUp() {
@@ -55,12 +62,15 @@ class AuditWriterTest {
         // b2-1 (V12): audit_log.organization_id now has a real FK to organization(id), so a
         // synthetic UUID.randomUUID() no longer resolves; TestOrganizations inserts a real row.
         org = TestOrganizations.insert(jdbc);
+        // b2-8 C4 (V25): the tenant an authenticated request or a job would have bound.
+        tenant = TenantContext.open(org);
         ActorId.set("job:audit-writer-test");
         MDC.remove(CorrelationId.MDC_KEY);
     }
 
     @AfterEach
     void clearContext() {
+        tenant.close();
         ActorId.clear();
         MDC.remove(CorrelationId.MDC_KEY);
     }
@@ -161,7 +171,9 @@ class AuditWriterTest {
             UUID organization = TestOrganizations.insert(jdbc);
             ActorId.set(actor);
 
-            append(AuditEvent.builder(organization, "SOMETHING_HAPPENED").build());
+            try (TenantContext.Scope scope = TenantContext.open(organization)) {
+                append(AuditEvent.builder(organization, "SOMETHING_HAPPENED").build());
+            }
 
             assertThat(onlyRow(organization).get("actor_id")).isEqualTo(actor);
         }
@@ -246,7 +258,7 @@ class AuditWriterTest {
 
     /** Stands in for a business change; any table the transaction writes to would do. */
     private void businessChange(String name) {
-        jdbc.update(
+        applicationJdbc.update(
                 "INSERT INTO shedlock(name, lock_until, locked_at, locked_by) VALUES (?,"
                         + " timezone('utc', now()), timezone('utc', now()), 'audit-writer-test')",
                 name);
@@ -266,7 +278,7 @@ class AuditWriterTest {
                         status -> {
                             writer.append(AuditEvent.builder(org, "SOMETHING_HAPPENED").build());
                             // now() is the transaction start time: the row must carry exactly it.
-                            return jdbc.queryForObject(
+                            return applicationJdbc.queryForObject(
                                     "SELECT occurred_at = now() FROM audit_log"
                                             + " WHERE organization_id = ?",
                                     Boolean.class,
@@ -311,7 +323,8 @@ class AuditWriterTest {
                                 () -> {
                                     // MDC is per thread: each writer is its own actor.
                                     ActorId.set(actor);
-                                    try {
+                                    // So is the tenant (V25): each writer binds its own.
+                                    try (TenantContext.Scope scope = TenantContext.open(org)) {
                                         start.await();
                                         for (int i = 0; i < perWriter; i++) {
                                             int n = i;

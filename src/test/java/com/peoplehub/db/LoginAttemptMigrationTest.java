@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -34,7 +35,7 @@ class LoginAttemptMigrationTest {
                     + " VALUES (?, ?, ?)";
     private static final String TRIGGER_MESSAGE = "audit_log is append-only";
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private String uniqueKey() {
         return "org-" + UUID.randomUUID();

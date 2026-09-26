@@ -3,10 +3,13 @@ package com.peoplehub.notification.inapp;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.util.Map;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,12 +31,17 @@ import org.springframework.transaction.support.TransactionTemplate;
 class NotificationWriterTest {
 
     @Autowired private NotificationWriter writer;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
+
+    // Statements that are part of the business transaction run on the application's own
+    // connection, as the runtime role; the fixture connection is outside that transaction.
+    @Autowired private JdbcTemplate applicationJdbc;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private ApplicationEvents events;
 
     private TransactionTemplate tx;
     private UUID org;
+    private TenantContext.Scope tenant;
     private UUID employee;
 
     @BeforeEach
@@ -42,7 +50,14 @@ class NotificationWriterTest {
         // b2-1 (V12): notification.organization_id now has a real FK to organization(id).
         // employee_id has no FK (deliberately not retrofitted; V12's own comments).
         org = TestOrganizations.insert(jdbc);
+        // b2-8 C4 (V25): the tenant an authenticated request or a job would have bound.
+        tenant = TenantContext.open(org);
         employee = UUID.randomUUID();
+    }
+
+    @AfterEach
+    void closeTenant() {
+        tenant.close();
     }
 
     private void append(NotificationMessage message) {
@@ -143,7 +158,7 @@ class NotificationWriterTest {
     }
 
     private void businessChange(String name) {
-        jdbc.update(
+        applicationJdbc.update(
                 "INSERT INTO shedlock(name, lock_until, locked_at, locked_by) VALUES (?,"
                         + " timezone('utc', now()), timezone('utc', now()), 'notification-writer-test')",
                 name);

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestOrganizations;
@@ -37,9 +38,15 @@ class NotificationRuntimeRoleTest {
             "INSERT INTO notification (organization_id, employee_id, type) VALUES (?, ?, 'SOMETHING_HAPPENED')";
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -81,7 +88,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void notificationInsertAndSelectSucceed() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         UUID employee = UUID.randomUUID();
         assertThat(insertNotification(org, employee)).isEqualTo(1);
 
@@ -100,7 +107,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void notificationReadCanBeUpdatedButNoOtherColumn() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         insertNotification(org, UUID.randomUUID());
 
         try (PreparedStatement ps =
@@ -138,7 +145,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void notificationDeleteAndTruncateAreDenied() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         insertNotification(org, UUID.randomUUID());
 
         assertDenied("DELETE FROM notification");
@@ -149,7 +156,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void preferenceInsertSelectAndUpdateSucceed() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         UUID employee = UUID.randomUUID();
         try (PreparedStatement ps =
                 runtime.prepareStatement(
@@ -185,6 +192,8 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void preferenceKeyColumnsCannotBeUpdated() {
+        // Bound to some tenant (V25), so what refuses these is the missing privilege.
+        bound(UUID.randomUUID());
         assertDenied("UPDATE notification_preference SET organization_id = gen_random_uuid()");
         assertDenied("UPDATE notification_preference SET employee_id = gen_random_uuid()");
         assertDenied("UPDATE notification_preference SET type = 'SOMETHING_ELSE'");
@@ -192,7 +201,7 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void preferenceDeleteAndTruncateAreDenied() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         UUID employee = UUID.randomUUID();
         try (PreparedStatement ps =
                 runtime.prepareStatement(
@@ -209,6 +218,9 @@ class NotificationRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleTooForBothTables() {
+        // Bound to the nil id (V25), so the nil-id row passes the tenant policy and meets its
+        // CHECK.
+        bound(new UUID(0L, 0L));
         assertThatThrownBy(
                         () -> {
                             try (Statement s = runtime.createStatement()) {
@@ -220,6 +232,10 @@ class NotificationRuntimeRoleTest {
                 .satisfies(
                         e ->
                                 assertThat(SqlErrors.sqlState(e))
-                                        .isEqualTo(SqlErrors.NOT_NULL_VIOLATION));
+                                        // V25: a NULL tenant can never match the bound one, so the
+                                        // tenant policy refuses the
+                                        // row before NOT NULL is reached (NOT NULL itself: the
+                                        // migration tests).
+                                        .isEqualTo(SqlErrors.INSUFFICIENT_PRIVILEGE));
     }
 }

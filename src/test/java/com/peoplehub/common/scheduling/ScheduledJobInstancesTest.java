@@ -3,11 +3,15 @@ package com.peoplehub.common.scheduling;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.PeopleHubApplication;
+import com.peoplehub.common.scheduling.testsupport.ProbeJobSchema;
+import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestcontainersConfiguration;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -40,6 +44,9 @@ class ScheduledJobInstancesTest {
     static void startContainers() {
         POSTGRES.start();
         REDIS.start();
+        // The probe's scratch table, created as the superuser: the instances run as the runtime
+        // role.
+        ProbeJobSchema.provision(TestDatabaseRoles.privilegedFixtureJdbc(POSTGRES));
     }
 
     @AfterAll
@@ -54,7 +61,7 @@ class ScheduledJobInstancesTest {
         try (Connection c = connect();
                 Statement s = c.createStatement()) {
             s.execute(
-                    "DO $$ BEGIN IF to_regclass('job_probe') IS NOT NULL THEN DELETE FROM job_probe; END IF; END $$");
+                    "DO $$ BEGIN IF to_regclass('scheduler_probe.job_probe') IS NOT NULL THEN DELETE FROM scheduler_probe.job_probe; END IF; END $$");
             s.execute(
                     "DO $$ BEGIN IF to_regclass('shedlock') IS NOT NULL THEN DELETE FROM shedlock; END IF; END $$");
         }
@@ -69,17 +76,16 @@ class ScheduledJobInstancesTest {
         String[] base = {
             "--server.port=0",
             "--spring.profiles.active=scheduler-test",
-            "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
-            "--spring.datasource.username=" + POSTGRES.getUsername(),
-            "--spring.datasource.password=" + POSTGRES.getPassword(),
             "--spring.data.redis.host=" + REDIS.getHost(),
             "--spring.data.redis.port=" + REDIS.getMappedPort(6379),
             "--probe.instance=" + label
         };
-        String[] args = new String[base.length + extraArgs.length];
-        System.arraycopy(base, 0, args, 0, base.length);
-        System.arraycopy(extraArgs, 0, args, base.length, extraArgs.length);
-        return new SpringApplicationBuilder(PeopleHubApplication.class).run(args);
+        List<String> args =
+                new ArrayList<>(TestDatabaseRoles.applicationDatabaseArguments(POSTGRES));
+        args.addAll(List.of(base));
+        args.addAll(List.of(extraArgs));
+        return new SpringApplicationBuilder(PeopleHubApplication.class)
+                .run(args.toArray(String[]::new));
     }
 
     private static long count(String sql) throws Exception {
@@ -104,7 +110,9 @@ class ScheduledJobInstancesTest {
 
     private static boolean atLeastRuns(long n) {
         try {
-            return count("SELECT count(*) FROM job_probe WHERE ended_at IS NOT NULL") >= n;
+            return count(
+                            "SELECT count(*) FROM scheduler_probe.job_probe WHERE ended_at IS NOT NULL")
+                    >= n;
         } catch (Exception e) {
             return false; // table not created yet
         }
@@ -123,9 +131,10 @@ class ScheduledJobInstancesTest {
 
         long overlaps =
                 count(
-                        "SELECT count(*) FROM job_probe x JOIN job_probe y ON x.id < y.id"
+                        "SELECT count(*) FROM scheduler_probe.job_probe x JOIN scheduler_probe.job_probe y ON x.id < y.id"
                                 + " AND x.started_at < y.ended_at AND y.started_at < x.ended_at");
-        long instancesThatRan = count("SELECT count(DISTINCT instance) FROM job_probe");
+        long instancesThatRan =
+                count("SELECT count(DISTINCT instance) FROM scheduler_probe.job_probe");
         assertThat(overlaps).as("runs that overlapped in time").isZero();
         assertThat(instancesThatRan).as("at least one instance ran the job").isPositive();
     }
@@ -137,7 +146,8 @@ class ScheduledJobInstancesTest {
                     30_000,
                     () -> {
                         try {
-                            return count("SELECT count(*) FROM job_probe WHERE ended_at IS NULL")
+                            return count(
+                                            "SELECT count(*) FROM scheduler_probe.job_probe WHERE ended_at IS NULL")
                                     == 1;
                         } catch (Exception e) {
                             return false;
@@ -168,7 +178,7 @@ class ScheduledJobInstancesTest {
         assertThat(closeMillis)
                 .as("shutdown is bounded by the wait (2 s), not held for the whole 20 s job")
                 .isLessThan(12_000);
-        assertThat(count("SELECT count(*) FROM job_probe WHERE ended_at IS NULL"))
+        assertThat(count("SELECT count(*) FROM scheduler_probe.job_probe WHERE ended_at IS NULL"))
                 .as("the job was interrupted before it could record its end")
                 .isEqualTo(1);
         // The point of interrupting rather than abandoning: the job unwinds, so its lock is
@@ -194,10 +204,13 @@ class ScheduledJobInstancesTest {
 
         app.close(); // shutdown while the 4 s run is mid-flight
 
-        assertThat(count("SELECT count(*) FROM job_probe WHERE ended_at IS NOT NULL"))
+        assertThat(
+                        count(
+                                "SELECT count(*) FROM scheduler_probe.job_probe WHERE ended_at IS NOT NULL"))
                 .as("the run was allowed to finish, not interrupted")
                 .isEqualTo(1);
-        assertThat(count("SELECT count(*) FROM job_probe WHERE ended_at IS NULL")).isZero();
+        assertThat(count("SELECT count(*) FROM scheduler_probe.job_probe WHERE ended_at IS NULL"))
+                .isZero();
         assertThat(
                         count(
                                 "SELECT count(*) FROM shedlock WHERE name = 'probe-job'"
@@ -214,7 +227,7 @@ class ScheduledJobInstancesTest {
         first.close();
         try (Connection c = connect();
                 Statement s = c.createStatement()) {
-            s.execute("DELETE FROM job_probe");
+            s.execute("DELETE FROM scheduler_probe.job_probe");
             // What an instance killed mid-run leaves behind: a lock that is still held, for an
             // hour.
             // (Held until the test says otherwise, so this does not depend on how long startup
@@ -227,7 +240,7 @@ class ScheduledJobInstancesTest {
         ConfigurableApplicationContext survivor = startInstance("B");
         try {
             Thread.sleep(3000); // ~15 attempts at the 200 ms schedule
-            assertThat(count("SELECT count(*) FROM job_probe"))
+            assertThat(count("SELECT count(*) FROM scheduler_probe.job_probe"))
                     .as("blocked while the dead instance's lock is still live")
                     .isZero();
 
@@ -243,6 +256,7 @@ class ScheduledJobInstancesTest {
             survivor.close();
         }
 
-        assertThat(count("SELECT count(*) FROM job_probe WHERE instance = 'B'")).isPositive();
+        assertThat(count("SELECT count(*) FROM scheduler_probe.job_probe WHERE instance = 'B'"))
+                .isPositive();
     }
 }

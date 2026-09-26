@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.common.scheduling.testsupport.DailyCloseExample;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -31,7 +32,7 @@ class CatchUpPatternTest {
     private static final ZoneId UTC = ZoneOffset.UTC;
     private static final ZoneId KOLKATA = ZoneId.of("Asia/Kolkata"); // UTC+5:30, no DST
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private final SettableClock clock = new SettableClock();
 

@@ -3,6 +3,7 @@ package com.peoplehub.db;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.util.List;
 import java.util.Map;
@@ -138,9 +139,12 @@ class RuntimePrivilegesTest {
     /** b1-4 (V7) grants INSERT on exactly these email_suppression columns. Not "since". */
     private static final Set<String> EMAIL_SUPPRESSION_INSERT_COLUMNS = Set.of("email", "reason");
 
-    /** b2-1 (V8) grants INSERT on exactly these organization columns. Not id/status/timestamps. */
-    private static final Set<String> ORGANIZATION_INSERT_COLUMNS =
-            Set.of("name", "login_key_normalized", "timezone");
+    /**
+     * No INSERT on any organization column: V8 granted (name, login_key_normalized, timezone), and
+     * b2-8 C4 (V25) revoked it, since organizations are created only through V24's
+     * peoplehub_create_organization.
+     */
+    private static final Set<String> ORGANIZATION_INSERT_COLUMNS = Set.of();
 
     /**
      * b2-1 (V8) grants UPDATE on exactly these organization columns. Not id/login_key_normalized.
@@ -303,7 +307,7 @@ class RuntimePrivilegesTest {
     private static final Set<String> SESSION_STEP_UP_INSERT_COLUMNS =
             Set.of("organization_id", "employee_id", "session_id", "method");
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     @Test
     void theInventoryOfTablesIsExactlyWhatThisTestKnowsAbout() {
@@ -612,7 +616,7 @@ class RuntimePrivilegesTest {
     }
 
     @Test
-    void organizationInsertIsGrantedOnExactlyNameLoginKeyAndTimezone() {
+    void organizationInsertIsGrantedOnNoColumnSinceV25() {
         for (String column :
                 jdbc.queryForList(
                         "SELECT column_name FROM information_schema.columns"

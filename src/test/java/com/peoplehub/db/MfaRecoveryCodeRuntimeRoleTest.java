@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.sql.Connection;
@@ -28,9 +29,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class MfaRecoveryCodeRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -102,7 +109,7 @@ class MfaRecoveryCodeRuntimeRoleTest {
 
     @Test
     void insertOnEmployeeIdAndCodeHashSucceedsAndSelectSucceeds() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         Long id = insertCode(org, employee);
@@ -119,7 +126,7 @@ class MfaRecoveryCodeRuntimeRoleTest {
 
     @Test
     void aCallerSuppliedIdIsRejected() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         // Without OVERRIDING, GENERATED ALWAYS refuses before any privilege is even checked.
@@ -148,7 +155,7 @@ class MfaRecoveryCodeRuntimeRoleTest {
 
     @Test
     void createdAtCannotBeSuppliedOnInsertEvenThoughItHasADefault() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertDenied(
@@ -162,7 +169,7 @@ class MfaRecoveryCodeRuntimeRoleTest {
 
     @Test
     void usedAtCanBeUpdatedButNothingElseCan() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         Long id = insertCode(org, employee);
 
@@ -180,7 +187,7 @@ class MfaRecoveryCodeRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         insertCode(org, employee);
 
@@ -190,7 +197,7 @@ class MfaRecoveryCodeRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleToo() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertThatThrownBy(

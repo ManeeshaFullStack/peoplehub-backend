@@ -7,6 +7,7 @@ import com.peoplehub.audit.AuditWriter;
 import com.peoplehub.common.api.error.ApiFieldError;
 import com.peoplehub.common.api.error.ApiProblemException;
 import com.peoplehub.common.api.error.ProblemType;
+import com.peoplehub.common.database.PreTenantResolver;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.common.logging.OrganizationId;
 import com.peoplehub.security.PasswordHasher;
@@ -17,6 +18,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.function.BiFunction;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,6 +52,7 @@ public class InvitationAcceptanceService {
     private final PasswordHasher passwordHasher;
     private final PasswordSecurityValidator passwordSecurityValidator;
     private final AuditWriter auditWriter;
+    private final PreTenantResolver preTenantResolver;
     private final Clock clock;
 
     public InvitationAcceptanceService(
@@ -57,19 +61,21 @@ public class InvitationAcceptanceService {
             PasswordHasher passwordHasher,
             PasswordSecurityValidator passwordSecurityValidator,
             AuditWriter auditWriter,
+            PreTenantResolver preTenantResolver,
             Clock clock) {
         this.store = store;
         this.secureTokens = secureTokens;
         this.passwordHasher = passwordHasher;
         this.passwordSecurityValidator = passwordSecurityValidator;
         this.auditWriter = auditWriter;
+        this.preTenantResolver = preTenantResolver;
         this.clock = clock;
     }
 
     @Transactional(readOnly = true)
     public InvitationPreview preview(String rawToken) {
         InvitationStore.TokenInvitation invitation =
-                usable(tokenHash(rawToken).flatMap(store::byTokenHash));
+                usable(tokenHash(rawToken).flatMap(hash -> resolve(hash, store::byTokenHash)));
         return new InvitationPreview(
                 invitation.organizationName(),
                 invitation.role(),
@@ -81,7 +87,9 @@ public class InvitationAcceptanceService {
     @Transactional
     public void accept(String rawToken, AcceptInvitationRequest request) {
         InvitationStore.TokenInvitation invitation =
-                usable(tokenHash(rawToken).flatMap(store::byTokenHashForUpdate));
+                usable(
+                        tokenHash(rawToken)
+                                .flatMap(hash -> resolve(hash, store::byTokenHashForUpdate)));
 
         if (!request.password().equals(request.confirmPassword())) {
             throw validationFailure(
@@ -130,6 +138,18 @@ public class InvitationAcceptanceService {
             Optional<InvitationStore.TokenInvitation> found) {
         return found.filter(invitation -> invitation.isUsableAt(clock.instant()))
                 .orElseThrow(() -> new ApiProblemException(ProblemType.NOT_FOUND, INVALID));
+    }
+
+    /**
+     * The invitation's organization first (V24), binding this transaction to it, then the
+     * invitation inside that organization (b2-8, O3). Unknown is empty, the same as before.
+     */
+    private Optional<InvitationStore.TokenInvitation> resolve(
+            String tokenHash,
+            BiFunction<UUID, String, Optional<InvitationStore.TokenInvitation>> lookup) {
+        return preTenantResolver
+                .bindByInvitationToken(tokenHash)
+                .flatMap(organizationId -> lookup.apply(organizationId, tokenHash));
     }
 
     private Optional<String> tokenHash(String rawToken) {

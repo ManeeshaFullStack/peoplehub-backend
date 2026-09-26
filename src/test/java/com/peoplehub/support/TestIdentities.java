@@ -7,9 +7,10 @@ import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Real tenant, employee and session rows for authentication tests (b2-3), written directly as the
- * container's superuser. Every value that is unique in the schema (login key, email, employee code,
- * token hash) is freshly generated, so tests never collide (B2 development rules).
+ * Real tenant, employee and session rows for authentication tests (b2-3), written directly through
+ * the privileged fixture connection ({@link PrivilegedFixture}). Every value that is unique in the
+ * schema (login key, email, employee code, token hash) is freshly generated, so tests never collide
+ * (B2 development rules).
  */
 public final class TestIdentities {
 

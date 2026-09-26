@@ -4,6 +4,7 @@ import com.peoplehub.audit.AuditDetails;
 import com.peoplehub.audit.AuditEvent;
 import com.peoplehub.audit.AuditTarget;
 import com.peoplehub.audit.AuditWriter;
+import com.peoplehub.common.database.PreTenantResolver;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.common.logging.OrganizationId;
 import com.peoplehub.mfa.MfaChallenges;
@@ -58,7 +59,7 @@ public class LoginService {
             "SELECT e.id, e.organization_id, e.role, e.status AS employee_status,"
                     + " e.password_hash, e.locked_until, o.status AS organization_status"
                     + " FROM organization o JOIN employee e ON e.organization_id = o.id"
-                    + " WHERE o.login_key_normalized = ? AND e.email_normalized = ?";
+                    + " WHERE o.id = ? AND o.login_key_normalized = ? AND e.email_normalized = ?";
 
     private static final String SELECT_MFA_STATE =
             "SELECT e.mfa_enabled, e.mfa_required, o.mfa_policy"
@@ -78,6 +79,7 @@ public class LoginService {
     private final FailedSignIns failedSignIns;
     private final ActiveEmployeeLock activeEmployeeLock;
     private final MfaChallenges mfaChallenges;
+    private final PreTenantResolver preTenantResolver;
 
     /** Verified against when there is no account, so a miss costs the same as a wrong password. */
     private final String dummyHash;
@@ -90,7 +92,8 @@ public class LoginService {
             AuditWriter auditWriter,
             FailedSignIns failedSignIns,
             ActiveEmployeeLock activeEmployeeLock,
-            MfaChallenges mfaChallenges) {
+            MfaChallenges mfaChallenges,
+            PreTenantResolver preTenantResolver) {
         this.jdbc = jdbc;
         this.passwordHasher = passwordHasher;
         this.refreshTokenService = refreshTokenService;
@@ -98,6 +101,7 @@ public class LoginService {
         this.failedSignIns = failedSignIns;
         this.activeEmployeeLock = activeEmployeeLock;
         this.mfaChallenges = mfaChallenges;
+        this.preTenantResolver = preTenantResolver;
         this.dummyHash = passwordHasher.hash(secureTokens.generateRaw());
     }
 
@@ -108,9 +112,21 @@ public class LoginService {
      */
     @Transactional
     public LoginResult login(LoginRequest request, InetAddress ip, String deviceLabel) {
+        // The organization first (V24), binding this transaction to it; an unknown one reads no
+        // tenant row and takes the same path as an unknown email (b2-8, O3).
         Optional<Account> account =
                 loginKey(request.organization())
-                        .flatMap(key -> findAccount(key, normalizeEmail(request.email())));
+                        .flatMap(
+                                key ->
+                                        preTenantResolver
+                                                .bindByLoginKey(key)
+                                                .flatMap(
+                                                        organizationId ->
+                                                                findAccount(
+                                                                        organizationId,
+                                                                        key,
+                                                                        normalizeEmail(
+                                                                                request.email()))));
 
         String hash = account.map(Account::passwordHash).orElse(null);
         // Always exactly one Argon2 check, whether the account exists, is locked or not.
@@ -200,8 +216,10 @@ public class LoginService {
                 .single();
     }
 
-    private Optional<Account> findAccount(String loginKey, String emailNormalized) {
+    private Optional<Account> findAccount(
+            UUID organizationId, String loginKey, String emailNormalized) {
         return jdbc.sql(SELECT_ACCOUNT)
+                .param(organizationId)
                 .param(loginKey)
                 .param(emailNormalized)
                 .query(

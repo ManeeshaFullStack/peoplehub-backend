@@ -56,7 +56,7 @@ class InvitationStore {
                     + " JOIN organization o ON o.id = i.organization_id"
                     + " JOIN employee e ON e.organization_id = i.organization_id"
                     + " AND e.email_normalized = i.email_normalized"
-                    + " WHERE i.token_hash = ?";
+                    + " WHERE i.organization_id = ? AND i.token_hash = ?";
 
     private static final String CONSUME_INVITATION =
             "UPDATE employee_invitation SET consumed_at = ?"
@@ -176,20 +176,23 @@ class InvitationStore {
     }
 
     /** For preview: a plain read, nothing locked. */
-    Optional<TokenInvitation> byTokenHash(String tokenHash) {
-        return queryByTokenHash(SELECT_BY_TOKEN_HASH, tokenHash);
+    Optional<TokenInvitation> byTokenHash(UUID organizationId, String tokenHash) {
+        return queryByTokenHash(SELECT_BY_TOKEN_HASH, organizationId, tokenHash);
     }
 
     /**
      * For acceptance: the invitation and employee rows stay locked until the transaction ends, so
      * two acceptances of one token run one after the other and only the first succeeds.
      */
-    Optional<TokenInvitation> byTokenHashForUpdate(String tokenHash) {
-        return queryByTokenHash(SELECT_BY_TOKEN_HASH + " FOR UPDATE OF i, e", tokenHash);
+    Optional<TokenInvitation> byTokenHashForUpdate(UUID organizationId, String tokenHash) {
+        return queryByTokenHash(
+                SELECT_BY_TOKEN_HASH + " FOR UPDATE OF i, e", organizationId, tokenHash);
     }
 
-    private Optional<TokenInvitation> queryByTokenHash(String sql, String tokenHash) {
+    private Optional<TokenInvitation> queryByTokenHash(
+            String sql, UUID organizationId, String tokenHash) {
         return jdbc.sql(sql)
+                .param(organizationId)
                 .param(tokenHash)
                 .query(
                         (rs, rowNum) ->

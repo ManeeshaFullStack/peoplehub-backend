@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -28,7 +29,7 @@ class PasswordResetTokenMigrationTest {
             "INSERT INTO password_reset_token (organization_id, employee_id, token_hash,"
                     + " expires_at) VALUES (?, ?, ?, ?) RETURNING id";
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private UUID insertOrganization() {
         return jdbc.queryForObject(

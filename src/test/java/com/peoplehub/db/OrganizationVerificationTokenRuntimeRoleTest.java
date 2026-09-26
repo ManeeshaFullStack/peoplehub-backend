@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestOrganizations;
@@ -38,9 +39,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class OrganizationVerificationTokenRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -73,7 +80,7 @@ class OrganizationVerificationTokenRuntimeRoleTest {
     @Test
     void insertOnOrganizationIdTokenHashAndExpiresAtSucceedsAndSelectSucceeds()
             throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         String hash = "hash-" + UUID.randomUUID();
         Instant expiresAt = Instant.now().plus(24, ChronoUnit.HOURS);
 
@@ -102,7 +109,7 @@ class OrganizationVerificationTokenRuntimeRoleTest {
 
     @Test
     void idAndCreatedAtCannotBeSuppliedOnInsertEvenThoughTheyHaveDefaults() {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         assertDenied(
                 "INSERT INTO organization_verification_token (id, organization_id, token_hash,"
                         + " expires_at) VALUES (gen_random_uuid(), '"
@@ -121,7 +128,7 @@ class OrganizationVerificationTokenRuntimeRoleTest {
 
     @Test
     void consumedAtCanBeUpdated() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         String hash = "hash-" + UUID.randomUUID();
         try (PreparedStatement ps =
                 runtime.prepareStatement(
@@ -144,6 +151,8 @@ class OrganizationVerificationTokenRuntimeRoleTest {
 
     @Test
     void organizationIdAndTokenHashCannotBeUpdated() {
+        // Bound to some tenant (V25), so what refuses these is the missing privilege.
+        bound(UUID.randomUUID());
         assertDenied(
                 "UPDATE organization_verification_token SET organization_id = gen_random_uuid()");
         assertDenied("UPDATE organization_verification_token SET token_hash = 'someone-else'");
@@ -151,7 +160,7 @@ class OrganizationVerificationTokenRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         try (PreparedStatement ps =
                 runtime.prepareStatement(
                         "INSERT INTO organization_verification_token (organization_id,"

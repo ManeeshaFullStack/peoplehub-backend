@@ -3,15 +3,18 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.PeopleHubApplication;
+import com.peoplehub.common.database.TenantContext;
+import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestOrganizations;
 import com.peoplehub.support.TestcontainersConfiguration;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
-import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -62,20 +65,21 @@ class EmailOutboxMailpitIntegrationTest {
         POSTGRES.start();
         REDIS.start();
         MAILPIT.start();
+        List<String> args =
+                new ArrayList<>(TestDatabaseRoles.applicationDatabaseArguments(POSTGRES));
+        args.addAll(
+                List.of(
+                        "--server.port=0",
+                        "--spring.data.redis.host=" + REDIS.getHost(),
+                        "--spring.data.redis.port=" + REDIS.getMappedPort(6379),
+                        "--spring.mail.host=" + MAILPIT.getHost(),
+                        "--spring.mail.port=" + MAILPIT.getMappedPort(1025),
+                        "--peoplehub.email.from-address=test@peoplehub.example",
+                        // Fast enough for a test to observe within a few seconds.
+                        "--peoplehub.email.outbox.interval=1s"));
         app =
                 new SpringApplicationBuilder(PeopleHubApplication.class)
-                        .run(
-                                "--server.port=0",
-                                "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
-                                "--spring.datasource.username=" + POSTGRES.getUsername(),
-                                "--spring.datasource.password=" + POSTGRES.getPassword(),
-                                "--spring.data.redis.host=" + REDIS.getHost(),
-                                "--spring.data.redis.port=" + REDIS.getMappedPort(6379),
-                                "--spring.mail.host=" + MAILPIT.getHost(),
-                                "--spring.mail.port=" + MAILPIT.getMappedPort(1025),
-                                "--peoplehub.email.from-address=test@peoplehub.example",
-                                // Fast enough for a test to observe within a few seconds.
-                                "--peoplehub.email.outbox.interval=1s");
+                        .run(args.toArray(String[]::new));
     }
 
     @AfterAll
@@ -93,7 +97,8 @@ class EmailOutboxMailpitIntegrationTest {
         EmailOutboxWriter writer = app.getBean(EmailOutboxWriter.class);
         TransactionTemplate tx =
                 new TransactionTemplate(app.getBean(PlatformTransactionManager.class));
-        JdbcTemplate jdbc = new JdbcTemplate(app.getBean(DataSource.class));
+        // Fixture setup and assertions; the application itself runs as the runtime role.
+        JdbcTemplate jdbc = TestDatabaseRoles.privilegedFixtureJdbc(POSTGRES);
         // b2-1 (V12): organization_id now has a real FK to organization(id).
         UUID org = TestOrganizations.insert(jdbc);
         String recipient = "integration-test@example.com";
@@ -110,7 +115,11 @@ class EmailOutboxMailpitIntegrationTest {
                                         .build())
                         .build();
 
-        tx.executeWithoutResult(status -> writer.enqueue(message));
+        // b2-8 C4 (V25): enqueued under the organization's tenant, as its request would be; the
+        // worker then finds it through V24 and sends it under the same tenant.
+        try (TenantContext.Scope tenant = TenantContext.open(org)) {
+            tx.executeWithoutResult(status -> writer.enqueue(message));
+        }
 
         waitUntil(
                 "the outbox row to become SENT",

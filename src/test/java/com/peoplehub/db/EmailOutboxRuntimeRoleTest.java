@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestOrganizations;
@@ -40,9 +41,15 @@ class EmailOutboxRuntimeRoleTest {
                     + " 'SOMETHING_HAPPENED')";
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -81,12 +88,12 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void insertSucceeds() throws SQLException {
-        assertThat(insertRow(TestOrganizations.insert(jdbc))).isEqualTo(1);
+        assertThat(insertRow(bound(TestOrganizations.insert(jdbc)))).isEqualTo(1);
     }
 
     @Test
     void selectSucceeds() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         insertRow(org);
 
         try (PreparedStatement ps =
@@ -108,7 +115,7 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void theRowIdAndTimeAreGeneratedEvenThoughTheRoleCannotSupplyThem() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         insertRow(org);
         insertRow(org);
 
@@ -189,7 +196,7 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void theSixProcessorColumnsCanBeUpdated() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         insertRow(org);
 
         try (PreparedStatement ps =
@@ -219,6 +226,8 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void theFourImmutableColumnsAndCreatedAtCannotBeUpdated() {
+        // Bound to some tenant (V25), so what refuses these is the missing privilege.
+        bound(UUID.randomUUID());
         assertDenied("UPDATE email_outbox SET organization_id = gen_random_uuid()");
         assertDenied("UPDATE email_outbox SET recipient = 'someone-else@example.com'");
         assertDenied("UPDATE email_outbox SET type = 'SOMETHING_ELSE'");
@@ -242,7 +251,7 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreStillDenied() throws SQLException {
-        UUID org = TestOrganizations.insert(jdbc);
+        UUID org = bound(TestOrganizations.insert(jdbc));
         insertRow(org);
 
         assertDenied("DELETE FROM email_outbox");
@@ -262,6 +271,9 @@ class EmailOutboxRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleToo() {
+        // Bound to the nil id (V25), so the nil-id row passes the tenant policy and meets its
+        // CHECK.
+        bound(new UUID(0L, 0L));
         assertThatThrownBy(
                         () -> {
                             try (Statement s = runtime.createStatement()) {
@@ -274,7 +286,11 @@ class EmailOutboxRuntimeRoleTest {
                 .satisfies(
                         e ->
                                 assertThat(SqlErrors.sqlState(e))
-                                        .isEqualTo(SqlErrors.NOT_NULL_VIOLATION));
+                                        // V25: a NULL tenant can never match the bound one, so the
+                                        // tenant policy refuses the
+                                        // row before NOT NULL is reached (NOT NULL itself: the
+                                        // migration tests).
+                                        .isEqualTo(SqlErrors.INSUFFICIENT_PRIVILEGE));
         assertThatThrownBy(
                         () -> {
                             try (Statement s = runtime.createStatement()) {

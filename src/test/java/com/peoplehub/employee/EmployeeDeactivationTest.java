@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import jakarta.servlet.http.Cookie;
 import java.sql.Date;
@@ -39,7 +40,7 @@ class EmployeeDeactivationTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private PasswordHasher passwordHasher;
     @Autowired private Clock clock;
 

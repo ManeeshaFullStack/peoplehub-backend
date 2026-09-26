@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.sql.Connection;
@@ -27,9 +28,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class SessionRevokeReasonsRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -50,6 +57,7 @@ class SessionRevokeReasonsRuntimeRoleTest {
                                 + " VALUES ('Acme Corp', ?, 'Asia/Kolkata') RETURNING id",
                         UUID.class,
                         "org-" + UUID.randomUUID());
+        bound(org);
         String email = "jane-" + UUID.randomUUID() + "@example.com";
         UUID employee =
                 jdbc.queryForObject(
@@ -119,6 +127,7 @@ class SessionRevokeReasonsRuntimeRoleTest {
         insertToken(employee, UUID.randomUUID());
         insertToken(other, UUID.randomUUID());
 
+        bound(employee.organizationId());
         try (PreparedStatement ps =
                 runtime.prepareStatement(
                         "UPDATE refresh_token SET revoked = true, revoked_at = now(),"

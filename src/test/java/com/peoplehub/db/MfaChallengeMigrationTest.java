@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import java.util.List;
 import java.util.Map;
@@ -27,7 +28,7 @@ class MfaChallengeMigrationTest {
                     + " VALUES (?, ?, ?, ?, 'Chrome on Windows', '203.0.113.7'::inet,"
                     + " now() + interval '5 minutes') RETURNING id";
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private UUID insertOrganization() {
         return jdbc.queryForObject(

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.sql.Connection;
@@ -29,9 +30,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class EmployeeLockoutRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -68,7 +75,7 @@ class EmployeeLockoutRuntimeRoleTest {
 
     @Test
     void theRuntimeRoleCanRecordAndClearALock() throws SQLException {
-        UUID employee = insertEmployee(insertOrganization());
+        UUID employee = insertEmployee(bound(insertOrganization()));
 
         try (PreparedStatement ps =
                 runtime.prepareStatement(
@@ -89,7 +96,7 @@ class EmployeeLockoutRuntimeRoleTest {
 
     @Test
     void theNonNegativeCheckAppliesToTheRuntimeRoleToo() {
-        UUID employee = insertEmployee(insertOrganization());
+        UUID employee = insertEmployee(bound(insertOrganization()));
 
         assertThatThrownBy(
                         () -> {
@@ -108,7 +115,7 @@ class EmployeeLockoutRuntimeRoleTest {
 
     @Test
     void theRuntimeRoleCanRevokeWithTheNewReasons() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         for (String reason : new String[] {"PASSWORD_RESET", "PASSWORD_CHANGED"}) {
             UUID token =

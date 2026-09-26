@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.notification.email.SuppressionReason;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,7 +23,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @IntegrationTest
 class EmailSuppressionMigrationTest {
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     // @IntegrationTest does not roll back between methods, and this table's primary key is the
     // email address itself, so a row left over from one test collides with the next (the same

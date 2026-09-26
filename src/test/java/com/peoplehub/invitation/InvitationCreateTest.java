@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 import com.peoplehub.security.jwt.AccessTokenIssuer;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.time.Instant;
 import java.util.HashMap;
@@ -35,7 +36,7 @@ class InvitationCreateTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private AccessTokenIssuer issuer;
 
     private TestIdentities.Organization org;

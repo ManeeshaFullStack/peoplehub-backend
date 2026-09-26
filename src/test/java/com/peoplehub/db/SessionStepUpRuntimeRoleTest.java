@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.sql.Connection;
@@ -27,9 +28,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class SessionStepUpRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -95,7 +102,7 @@ class SessionStepUpRuntimeRoleTest {
 
     @Test
     void theRuntimeRoleCanRecordAndReadAStepUp() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         long id = insertStepUp(org, insertEmployee(org));
 
         try (PreparedStatement ps =
@@ -110,7 +117,7 @@ class SessionStepUpRuntimeRoleTest {
 
     @Test
     void theVerificationTimeAndIdCannotBeSupplied() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertDenied(
@@ -131,7 +138,7 @@ class SessionStepUpRuntimeRoleTest {
 
     @Test
     void aStepUpCanNeverBeChangedOrRemoved() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         long id = insertStepUp(org, insertEmployee(org));
 
         for (String assignment :
@@ -150,9 +157,11 @@ class SessionStepUpRuntimeRoleTest {
 
     @Test
     void theTenantBindingAppliesToTheRuntimeRoleToo() {
-        UUID org = insertOrganization();
-        UUID employeeOfAnother = insertEmployee(insertOrganization());
+        UUID org = bound(insertOrganization());
+        UUID employeeOfAnother = insertEmployee(bound(insertOrganization()));
 
+        // Bound to the row's own organization, so the composite foreign key is what refuses it.
+        bound(org);
         assertThatThrownBy(() -> insertStepUp(org, employeeOfAnother))
                 .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("23503"));
     }

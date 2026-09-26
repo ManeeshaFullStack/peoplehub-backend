@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import java.util.Map;
 import java.util.UUID;
@@ -20,7 +21,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @IntegrationTest
 class MfaPendingSecretMigrationTest {
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private UUID insertEmployee() {
         UUID org =

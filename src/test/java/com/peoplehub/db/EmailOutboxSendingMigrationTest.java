@@ -3,6 +3,7 @@ package com.peoplehub.db;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,7 +17,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @IntegrationTest
 class EmailOutboxSendingMigrationTest {
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     @Test
     void v5AppliesCleanly() {

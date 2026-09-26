@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.sql.Connection;
@@ -31,9 +32,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class RefreshTokenRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -111,7 +118,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void insertOnTheGrantedColumnsSucceedsAndSelectSucceeds() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         UUID id = insertToken(org, employee);
@@ -128,7 +135,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void idAndCreatedAtCannotBeSuppliedOnInsert() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertDenied(
@@ -147,7 +154,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void theRevocationColumnsCanBeUpdatedButNothingElseCan() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         UUID id = insertToken(org, employee);
         UUID successor = insertToken(org, employee);
@@ -178,7 +185,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void deleteAndTruncateAreDenied() throws SQLException {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
         insertToken(org, employee);
 
@@ -188,7 +195,7 @@ class RefreshTokenRuntimeRoleTest {
 
     @Test
     void constraintsApplyToTheRuntimeRoleToo() {
-        UUID org = insertOrganization();
+        UUID org = bound(insertOrganization());
         UUID employee = insertEmployee(org);
 
         assertThatThrownBy(

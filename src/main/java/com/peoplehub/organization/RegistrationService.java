@@ -7,6 +7,7 @@ import com.peoplehub.audit.AuditWriter;
 import com.peoplehub.common.api.error.ApiFieldError;
 import com.peoplehub.common.api.error.ApiProblemException;
 import com.peoplehub.common.api.error.ProblemType;
+import com.peoplehub.common.database.PreTenantResolver;
 import com.peoplehub.notification.email.EmailMessage;
 import com.peoplehub.notification.email.EmailOutboxWriter;
 import com.peoplehub.notification.email.EmailPayload;
@@ -47,9 +48,9 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class RegistrationService {
 
-    private static final String INSERT_ORGANIZATION =
-            "INSERT INTO organization (name, login_key_normalized, timezone) VALUES (?, ?, ?)"
-                    + " RETURNING id";
+    // The owner-defined function (V24, O6): a new organization has no tenant to insert it under.
+    private static final String CREATE_ORGANIZATION =
+            "SELECT peoplehub_create_organization(?, ?, ?)";
 
     private static final String INSERT_EMPLOYEE =
             "INSERT INTO employee (organization_id, employee_code, name, email, email_normalized,"
@@ -65,7 +66,8 @@ public class RegistrationService {
 
     private static final String SELECT_TOKEN =
             "SELECT id, organization_id, expires_at, consumed_at"
-                    + " FROM organization_verification_token WHERE token_hash = ?";
+                    + " FROM organization_verification_token"
+                    + " WHERE organization_id = ? AND token_hash = ?";
 
     private static final String CONSUME_TOKEN =
             "UPDATE organization_verification_token SET consumed_at = ?"
@@ -82,7 +84,7 @@ public class RegistrationService {
     private static final String SELECT_PENDING_FOUNDER =
             "SELECT o.id AS organization_id, e.name AS founder_name"
                     + " FROM organization o JOIN employee e ON e.organization_id = o.id"
-                    + " WHERE o.login_key_normalized = ? AND e.email_normalized = ?"
+                    + " WHERE o.id = ? AND o.login_key_normalized = ? AND e.email_normalized = ?"
                     + " AND e.role = 'SUPER_ADMIN' AND e.status = 'PENDING_VERIFICATION'";
 
     private static final Duration TOKEN_EXPIRY = Duration.ofHours(24);
@@ -106,6 +108,7 @@ public class RegistrationService {
     private final SecureTokens secureTokens;
     private final EmailOutboxWriter emailOutboxWriter;
     private final AuditWriter auditWriter;
+    private final PreTenantResolver preTenantResolver;
     private final Clock clock;
     private final String appName;
 
@@ -116,6 +119,7 @@ public class RegistrationService {
             SecureTokens secureTokens,
             EmailOutboxWriter emailOutboxWriter,
             AuditWriter auditWriter,
+            PreTenantResolver preTenantResolver,
             Clock clock,
             @Value("${peoplehub.app-name}") String appName) {
         this.jdbc = jdbc;
@@ -124,6 +128,7 @@ public class RegistrationService {
         this.secureTokens = secureTokens;
         this.emailOutboxWriter = emailOutboxWriter;
         this.auditWriter = auditWriter;
+        this.preTenantResolver = preTenantResolver;
         this.clock = clock;
         this.appName = appName;
     }
@@ -155,7 +160,7 @@ public class RegistrationService {
         UUID organizationId;
         try {
             organizationId =
-                    jdbc.sql(INSERT_ORGANIZATION)
+                    jdbc.sql(CREATE_ORGANIZATION)
                             .param(request.organizationName())
                             .param(loginKey)
                             .param(request.timezone())
@@ -166,6 +171,8 @@ public class RegistrationService {
                     ProblemType.CONFLICT,
                     "That organization name is already in use. Choose a more distinctive name.");
         }
+        // Everything else registration writes belongs to the new organization (b2-8, O3, O6).
+        preTenantResolver.bindCreated(organizationId);
 
         LocalDate joinDate = LocalDate.now(clock.withZone(zoneId));
         UUID employeeId =
@@ -208,9 +215,16 @@ public class RegistrationService {
 
     @Transactional
     public VerifyEmailResponse verifyEmail(String rawToken) {
+        String tokenHash = secureTokens.hash(rawToken);
+        // The token's organization first (V24), binding this transaction to it (b2-8, O3).
+        Optional<UUID> organizationId = preTenantResolver.bindByVerificationToken(tokenHash);
+        if (organizationId.isEmpty()) {
+            return new VerifyEmailResponse(false);
+        }
         Optional<TokenLookup> found =
                 jdbc.sql(SELECT_TOKEN)
-                        .param(secureTokens.hash(rawToken))
+                        .param(organizationId.get())
+                        .param(tokenHash)
                         .query(
                                 (rs, rowNum) ->
                                         new TokenLookup(
@@ -256,16 +270,26 @@ public class RegistrationService {
         String loginKey = normalize(request.organizationLoginKey());
         String emailNormalized = normalizeEmail(request.companyEmail());
 
+        // The organization first (V24), binding this transaction to it; an unknown one reads no
+        // tenant row and gives the same answer (b2-8, O3).
         Optional<PendingFounder> found =
-                jdbc.sql(SELECT_PENDING_FOUNDER)
-                        .param(loginKey)
-                        .param(emailNormalized)
-                        .query(
-                                (rs, rowNum) ->
-                                        new PendingFounder(
-                                                (UUID) rs.getObject("organization_id"),
-                                                rs.getString("founder_name")))
-                        .optional();
+                preTenantResolver
+                        .bindByLoginKey(loginKey)
+                        .flatMap(
+                                organizationId ->
+                                        jdbc.sql(SELECT_PENDING_FOUNDER)
+                                                .param(organizationId)
+                                                .param(loginKey)
+                                                .param(emailNormalized)
+                                                .query(
+                                                        (rs, rowNum) ->
+                                                                new PendingFounder(
+                                                                        (UUID)
+                                                                                rs.getObject(
+                                                                                        "organization_id"),
+                                                                        rs.getString(
+                                                                                "founder_name")))
+                                                .optional());
 
         if (found.isPresent()) {
             PendingFounder founder = found.get();

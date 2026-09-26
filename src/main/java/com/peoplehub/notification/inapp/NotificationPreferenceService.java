@@ -54,6 +54,7 @@ public class NotificationPreferenceService {
                 .update();
     }
 
+    @Transactional(readOnly = true)
     public Preference get(UUID organizationId, UUID employeeId, String type) {
         return jdbc.sql(SELECT)
                 .param(organizationId)

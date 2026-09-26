@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestOrganizations;
 import java.util.List;
@@ -22,7 +23,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @IntegrationTest
 class NotificationMigrationTest {
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     @Test
     void v6AppliesCleanly() {

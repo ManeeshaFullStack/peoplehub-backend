@@ -3,6 +3,8 @@ package com.peoplehub.notification.inapp.testsupport;
 import com.peoplehub.common.api.paging.PageParams;
 import com.peoplehub.common.api.paging.PageQuery;
 import com.peoplehub.common.api.paging.PageResponse;
+import com.peoplehub.common.database.TenantContext;
+import com.peoplehub.common.database.TenantTransactions;
 import com.peoplehub.notification.inapp.NotificationBroadcastService;
 import com.peoplehub.notification.inapp.NotificationMessage;
 import com.peoplehub.notification.inapp.NotificationPreferenceService;
@@ -18,7 +20,6 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,7 +41,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  *
  * <p>Takes {@code organizationId}/{@code employeeId} as explicit request parameters, which is only
  * safe because this controller never runs outside a test profile -- a production endpoint must
- * never do this (CLAUDE.md Section 5, IDOR).
+ * never do this (CLAUDE.md Section 5, IDOR). For the same reason it binds that organization as the
+ * tenant itself (b2-8 C4, V25), standing in for the authenticated principal a real endpoint takes
+ * it from.
  */
 @Profile("notification-test")
 @RestController
@@ -65,12 +68,15 @@ public class NotificationTestController {
     private final NotificationPreferenceService preferences;
     private final NotificationBroadcastService broadcast;
     private final JdbcClient jdbc;
+    private final TenantTransactions tenants;
 
     public NotificationTestController(
             NotificationWriter writer,
             NotificationPreferenceService preferences,
             NotificationBroadcastService broadcast,
-            JdbcClient jdbc) {
+            JdbcClient jdbc,
+            TenantTransactions tenants) {
+        this.tenants = tenants;
         this.writer = writer;
         this.preferences = preferences;
         this.broadcast = broadcast;
@@ -79,11 +85,16 @@ public class NotificationTestController {
 
     @PostMapping("/notifications")
     @ResponseStatus(HttpStatus.CREATED)
-    @Transactional
     public void create(@Valid @RequestBody CreateNotificationRequest body) {
-        writer.append(
-                NotificationMessage.builder(body.organizationId(), body.employeeId(), body.type())
-                        .build());
+        tenants.inTransaction(
+                body.organizationId(),
+                () -> {
+                    writer.append(
+                            NotificationMessage.builder(
+                                            body.organizationId(), body.employeeId(), body.type())
+                                    .build());
+                    return null;
+                });
     }
 
     @GetMapping("/notifications")
@@ -92,6 +103,12 @@ public class NotificationTestController {
             @RequestParam UUID employeeId,
             @PageParams(defaultSize = 20, defaultSort = "createdAt,desc", sortable = "createdAt")
                     PageQuery query) {
+        return tenants.inReadOnlyTransaction(
+                organizationId, () -> listInTenant(organizationId, employeeId, query));
+    }
+
+    private PageResponse<NotificationView> listInTenant(
+            UUID organizationId, UUID employeeId, PageQuery query) {
         long total =
                 jdbc.sql(
                                 "SELECT count(*) FROM notification"
@@ -131,13 +148,16 @@ public class NotificationTestController {
             @PathVariable long id,
             @RequestParam UUID organizationId,
             @RequestParam UUID employeeId) {
-        jdbc.sql(
-                        "UPDATE notification SET read = true"
-                                + " WHERE id = ? AND organization_id = ? AND employee_id = ?")
-                .param(id)
-                .param(organizationId)
-                .param(employeeId)
-                .update();
+        tenants.inTransaction(
+                organizationId,
+                () ->
+                        jdbc.sql(
+                                        "UPDATE notification SET read = true"
+                                                + " WHERE id = ? AND organization_id = ? AND employee_id = ?")
+                                .param(id)
+                                .param(organizationId)
+                                .param(employeeId)
+                                .update());
     }
 
     @GetMapping("/preferences")
@@ -145,15 +165,23 @@ public class NotificationTestController {
             @RequestParam UUID organizationId,
             @RequestParam UUID employeeId,
             @RequestParam String type) {
-        NotificationPreferenceService.Preference preference =
-                preferences.get(organizationId, employeeId, type);
+        NotificationPreferenceService.Preference preference;
+        try (TenantContext.Scope scope = TenantContext.open(organizationId)) {
+            preference = preferences.get(organizationId, employeeId, type);
+        }
         return new PreferenceView(preference.email(), preference.inApp());
     }
 
     @PutMapping("/preferences")
     public void setPreference(@Valid @RequestBody SetPreferenceRequest body) {
-        preferences.set(
-                body.organizationId(), body.employeeId(), body.type(), body.email(), body.inApp());
+        try (TenantContext.Scope scope = TenantContext.open(body.organizationId())) {
+            preferences.set(
+                    body.organizationId(),
+                    body.employeeId(),
+                    body.type(),
+                    body.email(),
+                    body.inApp());
+        }
     }
 
     @GetMapping("/stream")

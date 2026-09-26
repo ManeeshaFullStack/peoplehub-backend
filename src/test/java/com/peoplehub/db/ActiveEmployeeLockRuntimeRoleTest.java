@@ -3,6 +3,7 @@ package com.peoplehub.db;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -26,9 +27,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class ActiveEmployeeLockRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private Connection runtime;
+
+    /** Binds this test's runtime connection to the organization it has just created (V25). */
+    private UUID bound(UUID organizationId) {
+        TestDatabaseRoles.bindTenant(runtime, organizationId);
+        return organizationId;
+    }
 
     @BeforeEach
     void connectAsRuntimeRole() throws SQLException {
@@ -49,6 +56,7 @@ class ActiveEmployeeLockRuntimeRoleTest {
                                 + " VALUES ('Acme Corp', ?, 'Asia/Kolkata', 'ACTIVE') RETURNING id",
                         UUID.class,
                         "org-" + UUID.randomUUID());
+        bound(org);
         String email = "jane-" + UUID.randomUUID() + "@example.com";
         UUID employee =
                 jdbc.queryForObject(

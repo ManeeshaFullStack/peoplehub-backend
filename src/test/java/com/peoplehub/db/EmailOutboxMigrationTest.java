@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestOrganizations;
 import java.util.List;
@@ -28,7 +29,7 @@ class EmailOutboxMigrationTest {
     private static final String INSERT =
             "INSERT INTO email_outbox (organization_id, recipient, type) VALUES (?, ?, ?)";
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private UUID insertRow() {
         // b2-1 (V12): organization_id now has a real FK to organization(id).
