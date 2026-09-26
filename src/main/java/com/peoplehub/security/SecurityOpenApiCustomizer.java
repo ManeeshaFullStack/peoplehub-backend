@@ -94,15 +94,37 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                             "409", "Only a deactivated employee can be reactivated."),
                     "/api/v1/me/mfa/enroll",
                     Map.of(
+                            "403",
+                            "Re-enrolling needs a fresh step-up of this session"
+                                    + " (step-up-required).",
                             "409",
-                            "The organization does not offer MFA, or the caller already has it."),
+                            "The organization does not offer MFA."),
                     "/api/v1/me/mfa/confirm",
                     Map.of(
                             "400",
                             "The code is missing, malformed or incorrect.",
                             "409",
-                            "Nothing to confirm: MFA is not offered, already enabled, or not"
-                                    + " started."));
+                            "Nothing to confirm: MFA is not offered, or no enrollment was"
+                                    + " started."),
+                    "/api/v1/me/step-up",
+                    Map.of(
+                            "400",
+                            "The password or code is missing or incorrect.",
+                            "403",
+                            "The organization requires MFA of the caller, who must enroll"
+                                    + " first (mfa-enrollment-required)."),
+                    "/api/v1/me/mfa/disable",
+                    Map.of(
+                            "403",
+                            "Needs a fresh step-up of this session (step-up-required).",
+                            "409",
+                            "MFA is not enabled, or the organization requires it of the caller."),
+                    "/api/v1/me/mfa/recovery-codes/regenerate",
+                    Map.of(
+                            "403",
+                            "Needs a fresh step-up of this session (step-up-required).",
+                            "409",
+                            "MFA is not enabled."));
 
     @Override
     public void customise(OpenAPI openApi) {

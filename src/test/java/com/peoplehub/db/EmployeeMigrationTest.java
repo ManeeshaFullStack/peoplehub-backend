@@ -121,7 +121,9 @@ class EmployeeMigrationTest {
                         "mfa_required",
                         "mfa_enrolled_at",
                         "mfa_totp_last_step",
-                        "mfa_reminder_dismissed_at");
+                        "mfa_reminder_dismissed_at",
+                        // b2-7 (V23): the pending secret of a step-up re-enrollment.
+                        "mfa_totp_pending_secret");
         assertThat(columns.get("id")).isEqualTo(new Column("uuid", null, "NO"));
         assertThat(columns.get("organization_id")).isEqualTo(new Column("uuid", null, "NO"));
         assertThat(columns.get("department_id")).isEqualTo(new Column("uuid", null, "YES"));
@@ -136,6 +138,8 @@ class EmployeeMigrationTest {
         assertThat(columns.get("exit_date")).isEqualTo(new Column("date", null, "YES"));
         assertThat(columns.get("mfa_required")).isEqualTo(new Column("boolean", null, "NO"));
         assertThat(columns.get("mfa_totp_last_step")).isEqualTo(new Column("bigint", null, "YES"));
+        assertThat(columns.get("mfa_totp_pending_secret"))
+                .isEqualTo(new Column("character varying", 512, "YES"));
     }
 
     @Test

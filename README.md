@@ -444,8 +444,23 @@ session from the password alone, as before. The challenge token is single use, s
 A wrong code is a 400 and counts toward the per-account lockout; the fifth wrong code of a challenge ends it. An
 unusable challenge (unknown, expired, used, ended, or an account that is locked or no longer active) is one 401: sign in
 again. The failed sign-in count clears and `LOGIN_SUCCEEDED` is written only when the MFA step completes. The address of
-the password step is recorded but never compared. Not built yet: step-up, disabling and resetting MFA, recovery-code
-regeneration, changing the policy, and promotion.
+the password step is recorded but never compared.
+
+**Step-up (B2-7/14-B2-7/16).** `POST /me/step-up` with `{password}` (MFA not enabled or required),
+`{password, code}` or `{password, recoveryCode}` (MFA enabled) proves the caller again for **this session only**, for
+five minutes (`session_step_up`, database time). Someone the policy requires to have MFA who has not enrolled gets
+403 `mfa-enrollment-required`. Wrong passwords and codes count toward the lockout; `STEP_UP_VERIFIED` is audited. A
+protected action without a fresh step-up answers 403 `step-up-required`; once MFA is enabled, a password-only step-up
+no longer counts. Step-up protected so far:
+
+- `POST /me/mfa/enroll` while enrolled (re-enrollment): the new secret waits in `employee.mfa_totp_pending_secret`
+  (V23) while the old authenticator and recovery codes keep working; `POST /me/mfa/confirm` with the new app's code
+  swaps the secret and replaces the recovery codes in one transaction. Abandoning changes nothing.
+- `POST /me/mfa/recovery-codes/regenerate`: ten new codes, once; unused old codes are invalidated, never deleted.
+- `POST /me/mfa/disable`: refused (409) while the policy requires MFA of the caller; otherwise clears the secret,
+  invalidates the recovery codes and any open sign-in challenge, and audits `MFA_DISABLED`.
+
+Not built yet: changing the policy, selecting people, resetting another person's MFA, promotion and onboarding.
 
 ## Invitations
 

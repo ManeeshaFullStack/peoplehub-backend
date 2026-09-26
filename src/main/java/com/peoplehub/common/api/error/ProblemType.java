@@ -28,6 +28,13 @@ public enum ProblemType {
     // b2-3 (B2-3/16): a request that is authenticated but not allowed, or that fails the CSRF or
     // Origin check on the refresh/logout endpoints.
     FORBIDDEN("forbidden", "Forbidden", HttpStatus.FORBIDDEN),
+    // b2-7 (B2-7/16): the action needs a step-up verified by this session in the last five
+    // minutes; the client prompts for it (POST /me/step-up) and retries.
+    STEP_UP_REQUIRED("step-up-required", "Step-up authentication required", HttpStatus.FORBIDDEN),
+    // b2-7 (B2-7/15): the organization's policy requires MFA of the caller, who has not enrolled;
+    // they enroll first (POST /me/mfa/enroll), then step up.
+    MFA_ENROLLMENT_REQUIRED(
+            "mfa-enrollment-required", "MFA enrollment required", HttpStatus.FORBIDDEN),
     // b2-2: organization registration's own "this identifier is already claimed" signals (the
     // organization name/login key is taken). Not a login/forgot-password/resend oracle -- those
     // stay generic and non-enumerating (D22); this is the requester's own chosen identifier

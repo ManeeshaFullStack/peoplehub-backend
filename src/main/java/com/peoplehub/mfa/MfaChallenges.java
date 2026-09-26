@@ -66,6 +66,11 @@ public class MfaChallenges {
             "UPDATE mfa_challenge SET invalidated_at = ?"
                     + " WHERE id = ? AND consumed_at IS NULL AND invalidated_at IS NULL";
 
+    private static final String INVALIDATE_OPEN =
+            "UPDATE mfa_challenge SET invalidated_at = ?"
+                    + " WHERE organization_id = ? AND employee_id = ?"
+                    + " AND consumed_at IS NULL AND invalidated_at IS NULL";
+
     private static final String COUNT_FAILURE =
             "UPDATE mfa_challenge SET failed_attempts = failed_attempts + 1"
                     + " WHERE id = ? RETURNING failed_attempts";
@@ -134,6 +139,19 @@ public class MfaChallenges {
     @Transactional(propagation = Propagation.MANDATORY)
     public void invalidate(Challenge challenge) {
         jdbc.sql(INVALIDATE).param(now()).param(challenge.id()).update();
+    }
+
+    /**
+     * Makes every open challenge of an account unusable (its MFA was disabled or reset); returns
+     * how many. The completion-time re-check would refuse them anyway; this is defense in depth.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int invalidateOpen(UUID organizationId, UUID employeeId) {
+        return jdbc.sql(INVALIDATE_OPEN)
+                .param(now())
+                .param(organizationId)
+                .param(employeeId)
+                .update();
     }
 
     /**

@@ -363,12 +363,14 @@ class MfaEnrollmentTest {
         assertThat(confirm(token, code).getResponse().getStatus()).isEqualTo(200);
         String storedSecret = (String) mfaRow(employee).get("mfa_totp_secret");
 
+        // b2-7 C5 (B2-7/6): enrolling again while enrolled needs a fresh step-up.
         MvcResult again = enroll(token);
-        assertThat(again.getResponse().getStatus()).isEqualTo(409);
-        assertThat(body(again)).containsEntry("detail", MfaEnrollmentService.ALREADY_ENABLED);
-        // The same code a second time (a replay) is refused too.
+        assertThat(again.getResponse().getStatus()).isEqualTo(403);
+        assertThat(body(again)).containsEntry("type", "urn:peoplehub:problem:step-up-required");
+        // The same code a second time (a replay) is refused too: nothing is pending.
         MvcResult replay = confirm(token, code);
         assertThat(replay.getResponse().getStatus()).isEqualTo(409);
+        assertThat(body(replay)).containsEntry("detail", MfaEnrollmentService.NOTHING_TO_CONFIRM);
 
         assertThat(mfaRow(employee).get("mfa_totp_secret")).isEqualTo(storedSecret);
         assertThat(

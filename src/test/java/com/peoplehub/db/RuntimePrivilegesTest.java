@@ -199,7 +199,9 @@ class RuntimePrivilegesTest {
                     "mfa_required",
                     "mfa_enrolled_at",
                     "mfa_totp_last_step",
-                    "mfa_reminder_dismissed_at");
+                    "mfa_reminder_dismissed_at",
+                    // b2-7 (V23): the pending secret of a step-up re-enrollment.
+                    "mfa_totp_pending_secret");
 
     /** b2-1 (V10) grants INSERT on exactly these employee_invitation columns. Not id/created_at. */
     private static final Set<String> EMPLOYEE_INVITATION_INSERT_COLUMNS =
