@@ -109,7 +109,11 @@ class DeactivationRaceTest {
         try {
             return new TransactionTemplate(transactionManager)
                     .execute(
-                            status -> loginService.login(loginRequest(), IP, "Test").orElseThrow());
+                            status ->
+                                    loginService
+                                            .login(loginRequest(), IP, "Test")
+                                            .session()
+                                            .orElseThrow());
         } finally {
             ActorId.clear();
         }
@@ -130,7 +134,7 @@ class DeactivationRaceTest {
         return () -> {
             ActorId.set(ActorId.ANONYMOUS);
             try {
-                return loginService.login(loginRequest(), IP, "Test");
+                return loginService.login(loginRequest(), IP, "Test").session();
             } finally {
                 ActorId.clear();
             }

@@ -89,13 +89,16 @@ class OrganizationMigrationTest {
                         "status",
                         "onboarding_completed_at",
                         "created_at",
-                        "updated_at");
+                        "updated_at",
+                        // b2-7 (V19): the organization MFA policy.
+                        "mfa_policy");
         assertThat(columns.get("id")).isEqualTo(new Column("uuid", null, "NO"));
         assertThat(columns.get("name")).isEqualTo(new Column("character varying", 200, "NO"));
         assertThat(columns.get("login_key_normalized"))
                 .isEqualTo(new Column("character varying", 200, "NO"));
         assertThat(columns.get("timezone")).isEqualTo(new Column("character varying", 64, "NO"));
         assertThat(columns.get("status")).isEqualTo(new Column("character varying", 24, "NO"));
+        assertThat(columns.get("mfa_policy")).isEqualTo(new Column("character varying", 32, "NO"));
         assertThat(columns.get("onboarding_completed_at"))
                 .isEqualTo(new Column("timestamp with time zone", null, "YES"));
         assertThat(columns.get("created_at"))

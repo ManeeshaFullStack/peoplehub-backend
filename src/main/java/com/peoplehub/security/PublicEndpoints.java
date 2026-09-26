@@ -26,6 +26,11 @@ public final class PublicEndpoints {
                     "/api/v1/auth/login",
                     "/api/v1/auth/refresh",
                     "/api/v1/auth/logout",
+                    // The MFA step of a sign-in (b2-7, B2-7/9): no session exists yet; each call
+                    // is authenticated by the single-use challenge token from the login answer.
+                    "/api/v1/auth/mfa/challenge",
+                    "/api/v1/auth/mfa/enroll",
+                    "/api/v1/auth/mfa/enroll/confirm",
                     // Forgot and reset password (b2-5): the person has no session; a reset is
                     // authenticated by the single-use code from the email.
                     "/api/v1/auth/forgot-password",

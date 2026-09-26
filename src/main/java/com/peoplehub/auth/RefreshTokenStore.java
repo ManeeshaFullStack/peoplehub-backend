@@ -153,7 +153,7 @@ class RefreshTokenStore {
                 .update();
     }
 
-    /** Why a token was revoked; mirrors V18's {@code ck_refresh_token_revoke_reason}. */
+    /** Why a token was revoked; mirrors V19's {@code ck_refresh_token_revoke_reason}. */
     enum RevokeReason {
         ROTATED,
         LOGOUT,
@@ -161,7 +161,11 @@ class RefreshTokenStore {
         PASSWORD_RESET,
         PASSWORD_CHANGED,
         SESSION_REVOKED,
-        DEACTIVATED
+        DEACTIVATED,
+        // b2-7 (V19): MFA newly required of someone not enrolled; their MFA was reset; promotion.
+        MFA_REQUIRED,
+        MFA_RESET,
+        ROLE_CHANGED
     }
 
     record Owner(UUID employeeId, UUID organizationId) {}

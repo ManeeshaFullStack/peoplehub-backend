@@ -24,7 +24,8 @@ import org.springframework.stereotype.Component;
  *       answer 401 (and 403).
  *   <li>Login, refresh, logout, forgot password and reset password document their own 401/403
  *       answers.
- *   <li>The sessions and deactivation endpoints (b2-6) also document their 400/403/404/409 answers.
+ *   <li>The sessions and deactivation endpoints (b2-6) and MFA enrollment (b2-7) also document
+ *       their 400/403/404/409 answers.
  * </ul>
  *
  * Driven by the same list as the security chain, so the document cannot say an endpoint is public
@@ -53,7 +54,23 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                     "/api/v1/auth/forgot-password",
                     Map.of("403", "The request came from a foreign origin."),
                     "/api/v1/auth/reset-password",
-                    Map.of("403", "The request came from a foreign origin."));
+                    Map.of("403", "The request came from a foreign origin."),
+                    "/api/v1/auth/mfa/challenge",
+                    mfaStepResponses(),
+                    "/api/v1/auth/mfa/enroll",
+                    Map.of(
+                            "400", "The challenge token is missing.",
+                            "401", "The challenge cannot be used; sign in again.",
+                            "403", "The request came from a foreign origin."),
+                    "/api/v1/auth/mfa/enroll/confirm",
+                    mfaStepResponses());
+
+    private static Map<String, String> mfaStepResponses() {
+        return Map.of(
+                "400", "The code is missing, malformed or incorrect; it may be tried again.",
+                "401", "The challenge cannot be used (any more); sign in again.",
+                "403", "The request came from a foreign origin.");
+    }
 
     /**
      * The other problem answers of authenticated operations whose failures are part of their
@@ -75,7 +92,77 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                     Map.of(
                             "403", "The caller may not reactivate this employee.",
                             "404", "No such employee in the caller's organization.",
-                            "409", "Only a deactivated employee can be reactivated."));
+                            "409", "Only a deactivated employee can be reactivated."),
+                    "/api/v1/me/mfa/enroll",
+                    Map.of(
+                            "403",
+                            "Re-enrolling needs a fresh step-up of this session"
+                                    + " (step-up-required).",
+                            "409",
+                            "The organization does not offer MFA."),
+                    "/api/v1/me/mfa/confirm",
+                    Map.of(
+                            "400",
+                            "The code is missing, malformed or incorrect.",
+                            "409",
+                            "Nothing to confirm: MFA is not offered, or no enrollment was"
+                                    + " started."),
+                    "/api/v1/me/step-up",
+                    Map.of(
+                            "400",
+                            "The password or code is missing or incorrect.",
+                            "403",
+                            "The organization requires MFA of the caller, who must enroll"
+                                    + " first (mfa-enrollment-required)."),
+                    "/api/v1/me/mfa/disable",
+                    Map.of(
+                            "403",
+                            "Needs a fresh step-up of this session (step-up-required).",
+                            "409",
+                            "MFA is not enabled, or the organization requires it of the caller."),
+                    "/api/v1/me/mfa/recovery-codes/regenerate",
+                    Map.of(
+                            "403",
+                            "Needs a fresh step-up of this session (step-up-required).",
+                            "409",
+                            "MFA is not enabled."));
+
+    /**
+     * The same, for the organization MFA administration, promotion and onboarding endpoints (b2-7).
+     */
+    private static final Map<String, Map<String, String>> ADMIN_PROBLEM_RESPONSES =
+            Map.of(
+                    "/api/v1/organization/security/mfa-policy",
+                    Map.of(
+                            "400",
+                            "The policy is missing or not one of the five values.",
+                            "403",
+                            "Not a Super Admin, or no fresh step-up of this session"
+                                    + " (step-up-required, mfa-enrollment-required)."),
+                    "/api/v1/super-admin/employees/{id}/mfa-required",
+                    Map.of(
+                            "400", "The value is missing.",
+                            "403",
+                                    "Not a Super Admin, or no fresh step-up of this session"
+                                            + " (step-up-required, mfa-enrollment-required).",
+                            "404", "No such employee in the caller's organization."),
+                    "/api/v1/admin/employees/{id}/mfa/reset",
+                    Map.of(
+                            "403",
+                                    "The caller may not reset this person's MFA, or has no fresh"
+                                            + " step-up (step-up-required,"
+                                            + " mfa-enrollment-required).",
+                            "404", "No such employee in the caller's organization.",
+                            "409", "The employee has no MFA to reset."),
+                    "/api/v1/super-admin/employees/{id}/promote-admin",
+                    Map.of(
+                            "403",
+                                    "Not a Super Admin, the caller themselves, or no fresh step-up"
+                                            + " (step-up-required, mfa-enrollment-required).",
+                            "404", "No such employee in the caller's organization.",
+                            "409", "Only an active Employee can be promoted."),
+                    "/api/v1/organization/onboarding/complete",
+                    Map.of("403", "Not a Super Admin."));
 
     @Override
     public void customise(OpenAPI openApi) {
@@ -100,7 +187,9 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
 
     private static void document(String path, PathItem item) {
         if (!PublicEndpoints.isPublicPath(path)) {
-            Map<String, String> problems = PROBLEM_RESPONSES.getOrDefault(path, Map.of());
+            Map<String, String> problems =
+                    PROBLEM_RESPONSES.getOrDefault(
+                            path, ADMIN_PROBLEM_RESPONSES.getOrDefault(path, Map.of()));
             for (Operation operation : item.readOperations()) {
                 requireToken(operation);
                 problems.forEach(

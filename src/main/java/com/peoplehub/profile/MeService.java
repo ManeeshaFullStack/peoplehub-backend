@@ -2,6 +2,8 @@ package com.peoplehub.profile;
 
 import com.peoplehub.common.api.error.ApiProblemException;
 import com.peoplehub.common.api.error.ProblemType;
+import com.peoplehub.mfa.MfaPolicy;
+import com.peoplehub.mfa.MfaReminders;
 import com.peoplehub.security.principal.AuthenticatedPrincipal;
 import java.sql.Date;
 import java.sql.Timestamp;
@@ -12,18 +14,26 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * The caller's own profile and welcome state (b2-3, B2-3/19; b2-4, B2-4/O12). The employee id and
- * the organization come only from the {@link AuthenticatedPrincipal} (Spec 3.2: self-service
- * endpoints never take an id from the request), and every query is qualified by both, so it can
- * only ever read or change the caller's own row in the caller's own tenant (Spec 15.1).
+ * The caller's own profile, welcome state and MFA state (b2-3, B2-3/19; b2-4, B2-4/O12; b2-7,
+ * B2-7/20). The employee id and the organization come only from the {@link AuthenticatedPrincipal}
+ * (Spec 3.2: self-service endpoints never take an id from the request), and every query is
+ * qualified by both, so it can only ever read or change the caller's own row in the caller's own
+ * tenant (Spec 15.1).
  */
 @Service
 public class MeService {
 
     private static final String SELECT_ME =
             "SELECT e.id, e.name, e.email, e.role, e.status, e.join_date, e.welcome_seen_at,"
+                    + " e.mfa_enabled, e.mfa_required, e.mfa_reminder_dismissed_at,"
                     + " o.name AS org_name, o.timezone,"
-                    + " o.onboarding_completed_at IS NOT NULL AS onboarding_completed"
+                    + " o.onboarding_completed_at IS NOT NULL AS onboarding_completed,"
+                    + " o.mfa_policy,"
+                    // B2-7/13: a Super Admin is warned while their organization has fewer than
+                    // two active Super Admins. Only the boolean leaves this query, never the count.
+                    + " e.role = 'SUPER_ADMIN' AND (SELECT count(*) FROM employee s"
+                    + " WHERE s.organization_id = e.organization_id AND s.role = 'SUPER_ADMIN'"
+                    + " AND s.status = 'ACTIVE') < 2 AS needs_additional_super_admin"
                     + " FROM employee e JOIN organization o ON o.id = e.organization_id"
                     + " WHERE e.id = ? AND e.organization_id = ?";
 
@@ -34,10 +44,12 @@ public class MeService {
 
     private final JdbcClient jdbc;
     private final Clock clock;
+    private final MfaReminders mfaReminders;
 
-    public MeService(JdbcClient jdbc, Clock clock) {
+    public MeService(JdbcClient jdbc, Clock clock, MfaReminders mfaReminders) {
         this.jdbc = jdbc;
         this.clock = clock;
+        this.mfaReminders = mfaReminders;
     }
 
     @Transactional(readOnly = true)
@@ -50,19 +62,27 @@ public class MeService {
                             Date joinDate = rs.getDate("join_date");
                             Timestamp welcomeSeenAt = rs.getTimestamp("welcome_seen_at");
                             String name = rs.getString("name");
+                            String role = rs.getString("role");
                             return new MeResponse(
                                     rs.getObject("id", UUID.class),
                                     name,
                                     firstName(name),
                                     rs.getString("email"),
-                                    rs.getString("role"),
+                                    role,
                                     rs.getString("status"),
                                     joinDate == null ? null : joinDate.toLocalDate(),
                                     welcomeSeenAt == null ? null : welcomeSeenAt.toInstant(),
                                     new MeResponse.Organization(
                                             rs.getString("org_name"),
                                             rs.getString("timezone"),
-                                            rs.getBoolean("onboarding_completed")));
+                                            rs.getBoolean("onboarding_completed")),
+                                    mfa(
+                                            MfaPolicy.valueOf(rs.getString("mfa_policy")),
+                                            role,
+                                            rs.getBoolean("mfa_required"),
+                                            rs.getBoolean("mfa_enabled"),
+                                            rs.getTimestamp("mfa_reminder_dismissed_at")),
+                                    rs.getBoolean("needs_additional_super_admin"));
                         })
                 .optional()
                 // Only possible if the row vanished between authentication and this read: answer
@@ -72,6 +92,25 @@ public class MeService {
                                 new ApiProblemException(
                                         ProblemType.UNAUTHORIZED,
                                         "Authentication is required to access this resource."));
+    }
+
+    /** The caller's MFA state (B2-7/20): the policy's coverage and the server-side reminder. */
+    private MeResponse.Mfa mfa(
+            MfaPolicy policy,
+            String role,
+            boolean selected,
+            boolean enabled,
+            Timestamp reminderDismissedAt) {
+        boolean required = policy.covers(role, selected);
+        return new MeResponse.Mfa(
+                enabled,
+                required,
+                policy.name(),
+                mfaReminders.show(
+                        policy,
+                        required,
+                        enabled,
+                        reminderDismissedAt == null ? null : reminderDismissedAt.toInstant()));
     }
 
     /**

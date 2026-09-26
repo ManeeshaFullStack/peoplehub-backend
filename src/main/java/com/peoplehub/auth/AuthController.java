@@ -2,14 +2,19 @@ package com.peoplehub.auth;
 
 import com.peoplehub.common.api.error.ApiProblemException;
 import com.peoplehub.common.api.error.ProblemType;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Optional;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -50,24 +55,50 @@ public class AuthController {
         this.guard = guard;
     }
 
+    /**
+     * A session ({@link TokenResponse} and cookies), or, when MFA is part of this person's sign-in,
+     * an {@link MfaChallengeResponse} with no session and no cookie (b2-7, B2-7/9). Every failed
+     * password step is the same 401.
+     */
     @PostMapping("/login")
-    public TokenResponse login(
+    @ApiResponse(
+            responseCode = "200",
+            description =
+                    "Signed in (TokenResponse), or the password was right and an MFA step must"
+                            + " follow (MfaChallengeResponse).",
+            content =
+                    @Content(
+                            mediaType = "application/json",
+                            schema =
+                                    @Schema(
+                                            oneOf = {
+                                                TokenResponse.class,
+                                                MfaChallengeResponse.class
+                                            })))
+    public ResponseEntity<Object> login(
             @Valid @RequestBody LoginRequest body,
             HttpServletRequest request,
             HttpServletResponse response) {
         guard.requireAllowedOrigin(request);
-        SessionTokens tokens =
-                loginService
-                        .login(
-                                body,
-                                clientAddress(request),
-                                DeviceLabels.from(request.getHeader(HttpHeaders.USER_AGENT)))
-                        .orElseThrow(
-                                () ->
-                                        new ApiProblemException(
-                                                ProblemType.UNAUTHORIZED, LOGIN_FAILED));
-        cookies.issue(response, tokens);
-        return tokenResponse(tokens);
+        LoginResult result =
+                loginService.login(
+                        body,
+                        clientAddress(request),
+                        DeviceLabels.from(request.getHeader(HttpHeaders.USER_AGENT)));
+        return switch (result) {
+            case LoginResult.Session session -> {
+                cookies.issue(response, session.tokens());
+                yield ResponseEntity.ok(tokenResponse(session.tokens()));
+            }
+            case LoginResult.MfaStep step ->
+                    ResponseEntity.ok()
+                            .cacheControl(CacheControl.noStore())
+                            .body(
+                                    new MfaChallengeResponse(
+                                            step.purpose().name(), step.challengeToken()));
+            case LoginResult.Failed failed ->
+                    throw new ApiProblemException(ProblemType.UNAUTHORIZED, LOGIN_FAILED);
+        };
     }
 
     @PostMapping("/refresh")
@@ -104,7 +135,7 @@ public class AuthController {
         return new ApiProblemException(ProblemType.UNAUTHORIZED, SESSION_ENDED);
     }
 
-    private static TokenResponse tokenResponse(SessionTokens tokens) {
+    static TokenResponse tokenResponse(SessionTokens tokens) {
         return new TokenResponse(
                 tokens.accessToken().value(),
                 "Bearer",

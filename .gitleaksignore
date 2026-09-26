@@ -2,4 +2,6 @@
 # Never add a real secret here: rotate/revoke it instead. Prefer exact fingerprints over path allowlists.
 # Fingerprints include the commit SHA, so an entry only matches while that commit exists in the scanned history.
 
-# No entries currently.
+# b2-7 (C2): TotpTest's expected otpauth:// URI carries the RFC 6238 Appendix B test secret, the ASCII string
+# "12345678901234567890" in base32. It is a published test vector, not a credential.
+fee980f691e31ed4f032b1c9391861e72a02d079:src/test/java/com/peoplehub/mfa/TotpTest.java:generic-api-key:167

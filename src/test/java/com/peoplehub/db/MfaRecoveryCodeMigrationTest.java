@@ -65,13 +65,20 @@ class MfaRecoveryCodeMigrationTest {
         assertThat(failed).isZero();
     }
 
+    // Since V20 every insert names organization_id, which is NOT NULL
+    // (MfaRecoveryCodeTenantMigrationTest).
+    private static final String INSERT =
+            "INSERT INTO mfa_recovery_code (organization_id, employee_id, code_hash) VALUES (?, ?, ?)";
+
     @Test
     void employeeIdMustReferenceARealEmployee() {
+        UUID org = insertOrganization();
+
         assertThatThrownBy(
                         () ->
                                 jdbc.update(
-                                        "INSERT INTO mfa_recovery_code (employee_id, code_hash)"
-                                                + " VALUES (?, ?)",
+                                        INSERT,
+                                        org,
                                         UUID.randomUUID(),
                                         "hash-" + UUID.randomUUID()))
                 .isInstanceOf(DataIntegrityViolationException.class)
@@ -83,18 +90,9 @@ class MfaRecoveryCodeMigrationTest {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
         String hash = "hash-" + UUID.randomUUID();
-        jdbc.update(
-                "INSERT INTO mfa_recovery_code (employee_id, code_hash) VALUES (?, ?)",
-                employee,
-                hash);
+        jdbc.update(INSERT, org, employee, hash);
 
-        assertThatThrownBy(
-                        () ->
-                                jdbc.update(
-                                        "INSERT INTO mfa_recovery_code (employee_id, code_hash)"
-                                                + " VALUES (?, ?)",
-                                        employee,
-                                        hash))
+        assertThatThrownBy(() -> jdbc.update(INSERT, org, employee, hash))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("23505"));
     }
@@ -104,12 +102,7 @@ class MfaRecoveryCodeMigrationTest {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
 
-        assertThatThrownBy(
-                        () ->
-                                jdbc.update(
-                                        "INSERT INTO mfa_recovery_code (employee_id, code_hash)"
-                                                + " VALUES (?, '')",
-                                        employee))
+        assertThatThrownBy(() -> jdbc.update(INSERT, org, employee, ""))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .message()
                 .contains("ck_mfa_recovery_code_code_hash_not_blank");
@@ -121,9 +114,9 @@ class MfaRecoveryCodeMigrationTest {
         UUID employee = insertEmployee(org);
         Long id =
                 jdbc.queryForObject(
-                        "INSERT INTO mfa_recovery_code (employee_id, code_hash) VALUES (?, ?)"
-                                + " RETURNING id",
+                        INSERT + " RETURNING id",
                         Long.class,
+                        org,
                         employee,
                         "hash-" + UUID.randomUUID());
 
@@ -143,8 +136,9 @@ class MfaRecoveryCodeMigrationTest {
         assertThatThrownBy(
                         () ->
                                 jdbc.update(
-                                        "INSERT INTO mfa_recovery_code (id, employee_id,"
-                                                + " code_hash) VALUES (1, ?, ?)",
+                                        "INSERT INTO mfa_recovery_code (id, organization_id,"
+                                                + " employee_id, code_hash) VALUES (1, ?, ?, ?)",
+                                        org,
                                         employee,
                                         "hash-" + UUID.randomUUID()))
                 .satisfies(e -> assertThat(SqlErrors.sqlMessage(e)).contains("GENERATED ALWAYS"));

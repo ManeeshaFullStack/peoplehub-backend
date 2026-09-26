@@ -83,13 +83,16 @@ class MfaRecoveryCodeRuntimeRoleTest {
                                         .containsAnyOf("permission denied", "must be owner"));
     }
 
-    private Long insertCode(UUID employee) throws SQLException {
+    // Since V20 every insert names organization_id, which is NOT NULL
+    // (MfaRecoveryCodeTenantRuntimeRoleTest).
+    private Long insertCode(UUID org, UUID employee) throws SQLException {
         try (PreparedStatement ps =
                 runtime.prepareStatement(
-                        "INSERT INTO mfa_recovery_code (employee_id, code_hash) VALUES (?, ?)"
-                                + " RETURNING id")) {
-            ps.setObject(1, employee);
-            ps.setString(2, "hash-" + UUID.randomUUID());
+                        "INSERT INTO mfa_recovery_code (organization_id, employee_id, code_hash)"
+                                + " VALUES (?, ?, ?) RETURNING id")) {
+            ps.setObject(1, org);
+            ps.setObject(2, employee);
+            ps.setString(3, "hash-" + UUID.randomUUID());
             try (ResultSet rs = ps.executeQuery()) {
                 rs.next();
                 return rs.getLong("id");
@@ -102,7 +105,7 @@ class MfaRecoveryCodeRuntimeRoleTest {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
 
-        Long id = insertCode(employee);
+        Long id = insertCode(org, employee);
 
         try (PreparedStatement ps =
                 runtime.prepareStatement("SELECT used_at FROM mfa_recovery_code WHERE id = ?")) {
@@ -124,8 +127,10 @@ class MfaRecoveryCodeRuntimeRoleTest {
                         () -> {
                             try (Statement s = runtime.createStatement()) {
                                 s.execute(
-                                        "INSERT INTO mfa_recovery_code (id, employee_id,"
+                                        "INSERT INTO mfa_recovery_code (id, organization_id, employee_id,"
                                                 + " code_hash) VALUES (999999999, '"
+                                                + org
+                                                + "', '"
                                                 + employee
                                                 + "', 'hash')");
                             }
@@ -133,8 +138,10 @@ class MfaRecoveryCodeRuntimeRoleTest {
                 .satisfies(e -> assertThat(SqlErrors.sqlState(e)).isEqualTo("428C9"));
         // With it, the missing INSERT privilege on the id column stops it.
         assertDenied(
-                "INSERT INTO mfa_recovery_code (id, employee_id, code_hash) OVERRIDING SYSTEM"
-                        + " VALUE VALUES (999999999, '"
+                "INSERT INTO mfa_recovery_code (id, organization_id, employee_id, code_hash)"
+                        + " OVERRIDING SYSTEM VALUE VALUES (999999999, '"
+                        + org
+                        + "', '"
                         + employee
                         + "', 'hash')");
     }
@@ -145,7 +152,10 @@ class MfaRecoveryCodeRuntimeRoleTest {
         UUID employee = insertEmployee(org);
 
         assertDenied(
-                "INSERT INTO mfa_recovery_code (employee_id, code_hash, created_at) VALUES ('"
+                "INSERT INTO mfa_recovery_code (organization_id, employee_id, code_hash, created_at)"
+                        + " VALUES ('"
+                        + org
+                        + "', '"
                         + employee
                         + "', 'hash', now() - interval '1 year')");
     }
@@ -154,7 +164,7 @@ class MfaRecoveryCodeRuntimeRoleTest {
     void usedAtCanBeUpdatedButNothingElseCan() throws SQLException {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
-        Long id = insertCode(employee);
+        Long id = insertCode(org, employee);
 
         try (PreparedStatement ps =
                 runtime.prepareStatement(
@@ -172,7 +182,7 @@ class MfaRecoveryCodeRuntimeRoleTest {
     void deleteAndTruncateAreDenied() throws SQLException {
         UUID org = insertOrganization();
         UUID employee = insertEmployee(org);
-        insertCode(employee);
+        insertCode(org, employee);
 
         assertDenied("DELETE FROM mfa_recovery_code");
         assertDenied("TRUNCATE mfa_recovery_code");
@@ -187,8 +197,10 @@ class MfaRecoveryCodeRuntimeRoleTest {
                         () -> {
                             try (Statement s = runtime.createStatement()) {
                                 s.execute(
-                                        "INSERT INTO mfa_recovery_code (employee_id, code_hash)"
+                                        "INSERT INTO mfa_recovery_code (organization_id, employee_id, code_hash)"
                                                 + " VALUES ('"
+                                                + org
+                                                + "', '"
                                                 + employee
                                                 + "', '')");
                             }
