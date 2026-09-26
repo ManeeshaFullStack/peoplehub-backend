@@ -54,7 +54,22 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                     "/api/v1/auth/forgot-password",
                     Map.of("403", "The request came from a foreign origin."),
                     "/api/v1/auth/reset-password",
-                    Map.of("403", "The request came from a foreign origin."));
+                    Map.of("403", "The request came from a foreign origin."),
+                    "/api/v1/auth/mfa/challenge",
+                    mfaStepResponses(),
+                    "/api/v1/auth/mfa/enroll",
+                    Map.of(
+                            "401", "The challenge cannot be used; sign in again.",
+                            "403", "The request came from a foreign origin."),
+                    "/api/v1/auth/mfa/enroll/confirm",
+                    mfaStepResponses());
+
+    private static Map<String, String> mfaStepResponses() {
+        return Map.of(
+                "400", "The code is missing, malformed or incorrect; it may be tried again.",
+                "401", "The challenge cannot be used (any more); sign in again.",
+                "403", "The request came from a foreign origin.");
+    }
 
     /**
      * The other problem answers of authenticated operations whose failures are part of their

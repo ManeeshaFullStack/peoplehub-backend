@@ -427,8 +427,25 @@ person can enroll voluntarily whenever the policy is not `DISABLED`:
   `PEOPLEHUB_MFA_REMINDER_INTERVAL`). Only people who may enroll, are not enrolled and are not required are reminded.
 
 Answers carrying a secret or codes are sent with `Cache-Control: no-store`. Enrolling again while enrolled is refused
-(409) until step-up authentication exists. Not built yet: the sign-in challenge and required enrollment at sign-in,
-step-up, disabling and resetting MFA, recovery-code sign-in and regeneration, changing the policy, and promotion.
+(409) until step-up authentication exists.
+
+**Sign-in with MFA (B2-7/9-B2-7/11).** After a correct password, `POST /auth/login` answers
+`{mfaRequired, challengeToken}` instead of a session when MFA is part of this sign-in: `CHALLENGE` for anyone enrolled
+(whatever the policy), `ENROLL` for someone the policy requires to have MFA who has not enrolled. Everyone else gets a
+session from the password alone, as before. The challenge token is single use, stored only as a hash, and valid for
+5 minutes (`CHALLENGE`) or 10 (`ENROLL`):
+
+- `POST /auth/mfa/challenge` with `{challengeToken, code}` or `{challengeToken, recoveryCode}` opens the session. A TOTP
+  code is never accepted twice (the last accepted time step is stored); a recovery code works once
+  (`MFA_RECOVERY_CODE_USED`).
+- `POST /auth/mfa/enroll` with `{challengeToken}` returns a new secret, then `POST /auth/mfa/enroll/confirm` with
+  `{challengeToken, code}` enables MFA, opens the session and returns the ten recovery codes once.
+
+A wrong code is a 400 and counts toward the per-account lockout; the fifth wrong code of a challenge ends it. An
+unusable challenge (unknown, expired, used, ended, or an account that is locked or no longer active) is one 401: sign in
+again. The failed sign-in count clears and `LOGIN_SUCCEEDED` is written only when the MFA step completes. The address of
+the password step is recorded but never compared. Not built yet: step-up, disabling and resetting MFA, recovery-code
+regeneration, changing the policy, and promotion.
 
 ## Invitations
 

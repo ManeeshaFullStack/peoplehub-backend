@@ -300,7 +300,12 @@ class LoginLockoutTest {
         try {
             List<Callable<Boolean>> attempts = new ArrayList<>();
             for (int i = 0; i < parallel; i++) {
-                attempts.add(() -> loginService.login(wrong, ip, DeviceLabels.UNKNOWN).isPresent());
+                attempts.add(
+                        () ->
+                                loginService
+                                        .login(wrong, ip, DeviceLabels.UNKNOWN)
+                                        .session()
+                                        .isPresent());
             }
             for (Future<Boolean> attempt : pool.invokeAll(attempts)) {
                 assertThat(attempt.get()).isFalse();

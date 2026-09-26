@@ -6,6 +6,8 @@ import com.peoplehub.audit.AuditTarget;
 import com.peoplehub.audit.AuditWriter;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.common.logging.OrganizationId;
+import com.peoplehub.mfa.MfaChallenges;
+import com.peoplehub.mfa.MfaPolicy;
 import com.peoplehub.organization.OrganizationLoginKeys;
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.security.SecureTokens;
@@ -43,7 +45,11 @@ import org.springframework.transaction.annotation.Transactional;
  * and never extending the lock. A successful login clears the count. Per-IP lockout is not part of
  * b2-5 (B2-5/P5).
  *
- * <p>No MFA step exists (MFA/2): MFA is an organization policy built in b2-7.
+ * <p>MFA (b2-7, B2-7/2, B2-7/9): once the password step has succeeded, a person who has enrolled
+ * gets a {@code CHALLENGE} step instead of a session, whatever the organization's policy, and a
+ * person the policy requires to have MFA who has not enrolled gets an {@code ENROLL} step. Neither
+ * clears the failed sign-in count or writes {@code LOGIN_SUCCEEDED}; {@link MfaSignInService} does
+ * both when the step completes. Everyone else signs in with the password alone, as before.
  */
 @Service
 public class LoginService {
@@ -53,6 +59,11 @@ public class LoginService {
                     + " e.password_hash, e.locked_until, o.status AS organization_status"
                     + " FROM organization o JOIN employee e ON e.organization_id = o.id"
                     + " WHERE o.login_key_normalized = ? AND e.email_normalized = ?";
+
+    private static final String SELECT_MFA_STATE =
+            "SELECT e.mfa_enabled, e.mfa_required, o.mfa_policy"
+                    + " FROM employee e JOIN organization o ON o.id = e.organization_id"
+                    + " WHERE e.id = ? AND e.organization_id = ?";
 
     private static final String INSERT_ATTEMPT =
             "INSERT INTO login_attempt (organization_login_key_attempted, email_attempted, ip,"
@@ -66,6 +77,7 @@ public class LoginService {
     private final AuditWriter auditWriter;
     private final FailedSignIns failedSignIns;
     private final ActiveEmployeeLock activeEmployeeLock;
+    private final MfaChallenges mfaChallenges;
 
     /** Verified against when there is no account, so a miss costs the same as a wrong password. */
     private final String dummyHash;
@@ -77,22 +89,25 @@ public class LoginService {
             RefreshTokenService refreshTokenService,
             AuditWriter auditWriter,
             FailedSignIns failedSignIns,
-            ActiveEmployeeLock activeEmployeeLock) {
+            ActiveEmployeeLock activeEmployeeLock,
+            MfaChallenges mfaChallenges) {
         this.jdbc = jdbc;
         this.passwordHasher = passwordHasher;
         this.refreshTokenService = refreshTokenService;
         this.auditWriter = auditWriter;
         this.failedSignIns = failedSignIns;
         this.activeEmployeeLock = activeEmployeeLock;
+        this.mfaChallenges = mfaChallenges;
         this.dummyHash = passwordHasher.hash(secureTokens.generateRaw());
     }
 
     /**
-     * Logs in; empty means "we couldn't sign you in with those details", whatever the reason. A new
-     * session is labelled with {@code deviceLabel}, from {@link DeviceLabels} (B2-6/3).
+     * Logs in. A new session is labelled with {@code deviceLabel}, from {@link DeviceLabels}
+     * (B2-6/3). When MFA is part of this person's sign-in (B2-7/2, B2-7/9) no session is opened
+     * yet: the answer is an MFA step and the session follows once it is completed.
      */
     @Transactional
-    public Optional<SessionTokens> login(LoginRequest request, InetAddress ip, String deviceLabel) {
+    public LoginResult login(LoginRequest request, InetAddress ip, String deviceLabel) {
         Optional<Account> account =
                 loginKey(request.organization())
                         .flatMap(key -> findAccount(key, normalizeEmail(request.email())));
@@ -108,16 +123,18 @@ public class LoginService {
                         && passwordMatches
                         && hash != null
                         && account.map(Account::isActive).orElse(false);
+        Optional<String> role = Optional.empty();
         if (success) {
             // Re-checked under a lock on the employee row just before the session is created: a
             // deactivation committed meanwhile makes this an ordinary failed login, and one still
             // running waits for this login and then ends its session too (B2-6/12).
-            success =
-                    activeEmployeeLock
-                            .forLogin(account.get().employeeId(), account.get().organizationId())
-                            .isPresent();
+            role =
+                    activeEmployeeLock.forLogin(
+                            account.get().employeeId(), account.get().organizationId());
+            success = role.isPresent();
         }
 
+        // Records the password step; when an MFA step follows, its outcome is not recorded here.
         recordAttempt(request, ip, success);
         if (!success) {
             // Only a known, unlocked account counts a failure; a locked one is not extended (R3).
@@ -125,16 +142,30 @@ public class LoginService {
                 failedSignIns.recordFailure(
                         account.get().employeeId(), account.get().organizationId(), ip);
             }
-            return Optional.empty();
+            return new LoginResult.Failed();
         }
 
         Account found = account.get();
+        Optional<MfaChallenges.Purpose> mfaStep = mfaStep(found, role.get());
+        if (mfaStep.isPresent()) {
+            // No session, no LOGIN_SUCCEEDED and the failed sign-in count is kept until the MFA
+            // step completes (B2-7/9, B2-7/25).
+            return new LoginResult.MfaStep(
+                    mfaStep.get(),
+                    mfaChallenges.create(
+                            found.organizationId(),
+                            found.employeeId(),
+                            mfaStep.get(),
+                            deviceLabel,
+                            ip));
+        }
+
         failedSignIns.clear(found.employeeId(), found.organizationId());
         ActorId.set(found.employeeId().toString());
         OrganizationId.set(found.organizationId());
         SessionTokens tokens =
                 refreshTokenService.start(
-                        found.organizationId(), found.employeeId(), found.role(), deviceLabel);
+                        found.organizationId(), found.employeeId(), role.get(), deviceLabel);
         auditWriter.append(
                 AuditEvent.builder(found.organizationId(), "LOGIN_SUCCEEDED")
                         .target(AuditTarget.of("EMPLOYEE", found.employeeId().toString()))
@@ -144,7 +175,29 @@ public class LoginService {
                                         .attribute("sessionId", tokens.sessionId().toString())
                                         .build())
                         .build());
-        return Optional.of(tokens);
+        return new LoginResult.Session(tokens);
+    }
+
+    /**
+     * Whether MFA is part of this sign-in, read under the employee lock: anyone enrolled is always
+     * challenged, whatever the policy (B2-7/2); someone the policy requires to have MFA who has not
+     * enrolled must enroll first (B2-7/9); anyone else signs in with the password alone.
+     */
+    private Optional<MfaChallenges.Purpose> mfaStep(Account account, String role) {
+        return jdbc.sql(SELECT_MFA_STATE)
+                .param(account.employeeId())
+                .param(account.organizationId())
+                .query(
+                        (rs, rowNum) -> {
+                            if (rs.getBoolean("mfa_enabled")) {
+                                return Optional.of(MfaChallenges.Purpose.CHALLENGE);
+                            }
+                            MfaPolicy policy = MfaPolicy.valueOf(rs.getString("mfa_policy"));
+                            return policy.covers(role, rs.getBoolean("mfa_required"))
+                                    ? Optional.of(MfaChallenges.Purpose.ENROLL)
+                                    : Optional.<MfaChallenges.Purpose>empty();
+                        })
+                .single();
     }
 
     private Optional<Account> findAccount(String loginKey, String emailNormalized) {

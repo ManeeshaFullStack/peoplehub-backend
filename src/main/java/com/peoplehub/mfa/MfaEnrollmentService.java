@@ -20,6 +20,7 @@ import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -42,9 +43,14 @@ import org.springframework.transaction.annotation.Transactional;
  * interleave. The account is always the caller's own, from the token; no id is taken from the
  * request.
  *
- * <p>A wrong confirmation code is a plain validation error and does not count toward the sign-in
- * lockout: the caller already holds the secret the code is derived from, so there is nothing to
- * guess. Nothing here logs or audits a secret, URI or code.
+ * <p>{@link #start} and {@link #confirm(UUID, UUID, String, InetAddress)} are the same two steps by
+ * account id, returning outcomes instead of throwing, for the required enrollment at sign-in
+ * (B2-7/9), which runs them inside its own transaction.
+ *
+ * <p>From a signed-in session a wrong confirmation code is a plain validation error and does not
+ * count toward the sign-in lockout: the caller already holds the secret the code is derived from,
+ * so there is nothing to guess. (At sign-in, before a session exists, the challenge counts it:
+ * B2-7/10.) Nothing here logs or audits a secret, URI or code.
  */
 @Service
 public class MfaEnrollmentService {
@@ -104,26 +110,40 @@ public class MfaEnrollmentService {
         this.appName = appName;
     }
 
+    /** The outcome of starting an enrollment. */
+    public sealed interface StartOutcome {
+        /** A new pending secret, to be shown once. */
+        record Started(MfaEnrollmentResponse response) implements StartOutcome {}
+
+        /** Enrollment is not possible now; {@code detail} says why. */
+        record Refused(String detail) implements StartOutcome {}
+    }
+
+    /** The outcome of confirming an enrollment. */
+    public sealed interface ConfirmOutcome {
+        /** MFA is enabled; the recovery codes are to be shown once. */
+        record Enabled(List<String> recoveryCodes) implements ConfirmOutcome {
+
+            @Override
+            public String toString() {
+                return "Enabled[...]";
+            }
+        }
+
+        /** The code does not match the pending secret; nothing changed. */
+        record WrongCode() implements ConfirmOutcome {}
+
+        /** There is nothing to confirm; {@code detail} says why. */
+        record Refused(String detail) implements ConfirmOutcome {}
+    }
+
     /** Starts (or restarts) the caller's enrollment and returns the new secret, once. */
     @Transactional
     public MfaEnrollmentResponse enroll(AuthenticatedPrincipal caller) {
-        Account account = lockAccount(caller.organizationId(), caller.employeeId());
-        if (!account.policy().offersEnrollment()) {
-            throw conflict(NOT_OFFERED);
-        }
-        if (account.enabled()) {
-            throw conflict(ALREADY_ENABLED);
-        }
-        byte[] secret = Totp.newSecret();
-        Timestamp now = Timestamp.from(clock.instant());
-        jdbc.sql(SET_PENDING_SECRET)
-                .param(cipher.encrypt(secret, caller.organizationId(), caller.employeeId()))
-                .param(now)
-                .param(caller.employeeId())
-                .param(caller.organizationId())
-                .update();
-        return new MfaEnrollmentResponse(
-                Totp.displaySecret(secret), Totp.otpauthUri(appName, accountName(account), secret));
+        return switch (start(caller.organizationId(), caller.employeeId())) {
+            case StartOutcome.Started started -> started.response();
+            case StartOutcome.Refused refused -> throw conflict(refused.detail());
+        };
     }
 
     /**
@@ -132,27 +152,69 @@ public class MfaEnrollmentService {
     @Transactional
     public MfaRecoveryCodesResponse confirm(
             AuthenticatedPrincipal caller, String code, InetAddress ip) {
-        UUID organizationId = caller.organizationId();
-        UUID employeeId = caller.employeeId();
+        return switch (confirm(caller.organizationId(), caller.employeeId(), code, ip)) {
+            case ConfirmOutcome.Enabled enabled ->
+                    new MfaRecoveryCodesResponse(enabled.recoveryCodes());
+            case ConfirmOutcome.WrongCode wrong ->
+                    throw new ApiProblemException(
+                            ProblemType.VALIDATION_ERROR,
+                            "One or more fields are invalid.",
+                            List.of(new ApiFieldError("code", WRONG_CODE)),
+                            Map.of());
+            case ConfirmOutcome.Refused refused -> throw conflict(refused.detail());
+        };
+    }
+
+    /**
+     * Starts an enrollment for an account, in the caller's transaction: from the signed-in {@link
+     * #enroll} or from a required enrollment at sign-in (B2-7/9). Locks the employee row.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public StartOutcome start(UUID organizationId, UUID employeeId) {
         Account account = lockAccount(organizationId, employeeId);
         if (!account.policy().offersEnrollment()) {
-            throw conflict(NOT_OFFERED);
+            return new StartOutcome.Refused(NOT_OFFERED);
         }
         if (account.enabled()) {
-            throw conflict(ALREADY_ENABLED);
+            return new StartOutcome.Refused(ALREADY_ENABLED);
+        }
+        byte[] secret = Totp.newSecret();
+        Timestamp now = Timestamp.from(clock.instant());
+        jdbc.sql(SET_PENDING_SECRET)
+                .param(cipher.encrypt(secret, organizationId, employeeId))
+                .param(now)
+                .param(employeeId)
+                .param(organizationId)
+                .update();
+        return new StartOutcome.Started(
+                new MfaEnrollmentResponse(
+                        Totp.displaySecret(secret),
+                        Totp.otpauthUri(appName, accountName(account), secret)));
+    }
+
+    /**
+     * Confirms an account's pending enrollment, in the caller's transaction: enables MFA, replaces
+     * the recovery codes and audits {@code MFA_ENROLLED}. A wrong code changes nothing. Locks the
+     * employee row.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public ConfirmOutcome confirm(
+            UUID organizationId, UUID employeeId, String code, InetAddress ip) {
+        Account account = lockAccount(organizationId, employeeId);
+        if (!account.policy().offersEnrollment()) {
+            return new ConfirmOutcome.Refused(NOT_OFFERED);
+        }
+        if (account.enabled()) {
+            return new ConfirmOutcome.Refused(ALREADY_ENABLED);
         }
         if (account.encryptedSecret() == null) {
-            throw conflict(NOTHING_TO_CONFIRM);
+            return new ConfirmOutcome.Refused(NOTHING_TO_CONFIRM);
         }
         byte[] secret = cipher.decrypt(account.encryptedSecret(), organizationId, employeeId);
         Instant now = clock.instant();
         OptionalLong step = Totp.verify(secret, code, now, account.lastStep());
         if (step.isEmpty()) {
-            throw new ApiProblemException(
-                    ProblemType.VALIDATION_ERROR,
-                    "One or more fields are invalid.",
-                    List.of(new ApiFieldError("code", WRONG_CODE)),
-                    Map.of());
+            return new ConfirmOutcome.WrongCode();
         }
 
         Timestamp at = Timestamp.from(now);
@@ -186,7 +248,7 @@ public class MfaEnrollmentService {
                                         .attribute("codesIssued", codes.size())
                                         .build())
                         .build());
-        return new MfaRecoveryCodesResponse(codes);
+        return new ConfirmOutcome.Enabled(codes);
     }
 
     private Account lockAccount(UUID organizationId, UUID employeeId) {
