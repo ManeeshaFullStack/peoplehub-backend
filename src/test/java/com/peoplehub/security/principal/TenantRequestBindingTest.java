@@ -10,6 +10,7 @@ import com.peoplehub.common.database.TenantBinding;
 import com.peoplehub.common.database.TenantContext;
 import com.peoplehub.security.jwt.AccessTokenIssuer;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.sql.Connection;
 import java.time.Instant;
@@ -36,7 +37,7 @@ import tools.jackson.databind.json.JsonMapper;
 class TenantRequestBindingTest {
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private AccessTokenIssuer issuer;
     @MockitoSpyBean private TenantBinding tenantBinding;
 

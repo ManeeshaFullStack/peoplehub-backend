@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.peoplehub.common.api.correlation.CorrelationId;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -43,7 +44,11 @@ class AuditWriterTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private AuditWriter writer;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
+
+    // Statements that are part of the business transaction run on the application's own
+    // connection, as the runtime role; the fixture connection is outside that transaction.
+    @Autowired private JdbcTemplate applicationJdbc;
     @Autowired private PlatformTransactionManager transactionManager;
 
     private TransactionTemplate tx;
@@ -246,7 +251,7 @@ class AuditWriterTest {
 
     /** Stands in for a business change; any table the transaction writes to would do. */
     private void businessChange(String name) {
-        jdbc.update(
+        applicationJdbc.update(
                 "INSERT INTO shedlock(name, lock_until, locked_at, locked_by) VALUES (?,"
                         + " timezone('utc', now()), timezone('utc', now()), 'audit-writer-test')",
                 name);
@@ -266,7 +271,7 @@ class AuditWriterTest {
                         status -> {
                             writer.append(AuditEvent.builder(org, "SOMETHING_HAPPENED").build());
                             // now() is the transaction start time: the row must carry exactly it.
-                            return jdbc.queryForObject(
+                            return applicationJdbc.queryForObject(
                                     "SELECT occurred_at = now() FROM audit_log"
                                             + " WHERE organization_id = ?",
                                     Boolean.class,

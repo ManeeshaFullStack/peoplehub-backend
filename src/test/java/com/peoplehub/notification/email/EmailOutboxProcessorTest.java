@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.common.database.TenantTransactions;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import jakarta.mail.SendFailedException;
 import jakarta.mail.internet.AddressException;
@@ -47,7 +48,7 @@ import tools.jackson.databind.json.JsonMapper;
 class EmailOutboxProcessorTest {
 
     @Autowired private JdbcClient jdbc;
-    @Autowired private JdbcTemplate jdbcTemplate;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbcTemplate;
     @Autowired private EmailSuppressionService suppressionService;
     @Autowired private TenantTransactions tenantTransactions;
     @Autowired private PlatformTransactionManager transactionManager;

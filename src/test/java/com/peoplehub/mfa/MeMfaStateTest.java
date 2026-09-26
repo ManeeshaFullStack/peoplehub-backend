@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.peoplehub.security.jwt.AccessTokenIssuer;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.MutableClock;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -42,7 +43,7 @@ class MeMfaStateTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private AccessTokenIssuer issuer;
     @Autowired private MutableClock clock;
 

@@ -24,6 +24,9 @@ import org.springframework.stereotype.Component;
  *   <li>{@code probe.unwind-millis}: how long the run takes to clean up after being interrupted
  *       (default 0), like a real job finishing what it started
  * </ul>
+ *
+ * <p>It writes to {@link ProbeJobSchema#TABLE} through the application's own connection (the
+ * runtime role, in tests); the test provisions that table beforehand ({@link ProbeJobSchema}).
  */
 @Profile("scheduler-test")
 @Component
@@ -52,10 +55,6 @@ public class ProbeJob {
         this.workMillis = workMillis;
         this.fail = fail;
         this.unwindMillis = unwindMillis;
-        jdbc.execute(
-                "CREATE TABLE IF NOT EXISTS job_probe ("
-                        + "id BIGSERIAL PRIMARY KEY, instance TEXT NOT NULL,"
-                        + " started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ)");
     }
 
     @Scheduled(fixedDelayString = "${probe.every:PT0.2S}")
@@ -67,7 +66,9 @@ public class ProbeJob {
     private void work() {
         Long id =
                 jdbc.queryForObject(
-                        "INSERT INTO job_probe(instance, started_at) VALUES (?, clock_timestamp())"
+                        "INSERT INTO "
+                                + ProbeJobSchema.TABLE
+                                + "(instance, started_at) VALUES (?, clock_timestamp())"
                                 + " RETURNING id",
                         Long.class,
                         instance);
@@ -80,7 +81,9 @@ public class ProbeJob {
             unwind();
             throw new IllegalStateException("interrupted", e);
         }
-        jdbc.update("UPDATE job_probe SET ended_at = clock_timestamp() WHERE id = ?", id);
+        jdbc.update(
+                "UPDATE " + ProbeJobSchema.TABLE + " SET ended_at = clock_timestamp() WHERE id = ?",
+                id);
     }
 
     /** What a real job does when told to stop: finish what it must, then let the failure out. */

@@ -3,6 +3,7 @@ package com.peoplehub.common.scheduling;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.common.scheduling.testsupport.ProbeJob;
+import com.peoplehub.common.scheduling.testsupport.ProbeJobSchema;
 import com.peoplehub.support.CapturingSentryTransportConfig;
 import com.peoplehub.support.IntegrationTest;
 import java.util.List;
@@ -33,7 +34,7 @@ import tools.jackson.databind.json.JsonMapper;
             "probe.fail=true",
             "probe.every=PT1H"
         })
-@Import(CapturingSentryTransportConfig.class)
+@Import({CapturingSentryTransportConfig.class, ProbeJobSchema.class})
 class JobFailureAlertTest {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();

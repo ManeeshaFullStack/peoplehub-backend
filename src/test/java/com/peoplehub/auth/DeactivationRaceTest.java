@@ -9,6 +9,7 @@ import com.peoplehub.employee.EmployeeLifecycleService;
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.security.principal.AuthenticatedPrincipal;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.net.InetAddress;
 import java.util.ArrayList;
@@ -51,7 +52,7 @@ class DeactivationRaceTest {
     /** How long a blocked call must stay blocked to count as waiting. */
     private static final long WAIT_MS = 700;
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private PasswordHasher passwordHasher;
     @Autowired private LoginService loginService;
     @Autowired private RefreshTokenService refreshTokenService;

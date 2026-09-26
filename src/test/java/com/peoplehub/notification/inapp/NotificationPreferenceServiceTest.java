@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -24,7 +25,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 class NotificationPreferenceServiceTest {
 
     @Autowired private NotificationPreferenceService service;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     @Test
     void defaultsToBothChannelsOnWhenNoRowExistsYet() {

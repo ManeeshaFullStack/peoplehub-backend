@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestcontainersConfiguration;
@@ -34,7 +35,7 @@ class MfaRecoveryCodeTenantMigrationTest {
             "INSERT INTO mfa_recovery_code (organization_id, employee_id, code_hash)"
                     + " VALUES (?, ?, ?) RETURNING id";
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private UUID insertOrganization() {
         return jdbc.queryForObject(

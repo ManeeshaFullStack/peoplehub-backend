@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.util.Map;
 import java.util.UUID;
@@ -28,7 +29,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 class NotificationWriterTest {
 
     @Autowired private NotificationWriter writer;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
+
+    // Statements that are part of the business transaction run on the application's own
+    // connection, as the runtime role; the fixture connection is outside that transaction.
+    @Autowired private JdbcTemplate applicationJdbc;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private ApplicationEvents events;
 
@@ -143,7 +148,7 @@ class NotificationWriterTest {
     }
 
     private void businessChange(String name) {
-        jdbc.update(
+        applicationJdbc.update(
                 "INSERT INTO shedlock(name, lock_until, locked_at, locked_by) VALUES (?,"
                         + " timezone('utc', now()), timezone('utc', now()), 'notification-writer-test')",
                 name);

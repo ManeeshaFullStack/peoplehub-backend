@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.sql.Connection;
@@ -36,7 +37,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 class ShedLockRuntimeRoleTest {
 
     @Autowired private PostgreSQLContainer postgres;
-    @Autowired private JdbcTemplate superuserJdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate superuserJdbc;
     @Autowired private Clock clock;
 
     private LockProvider provider;

@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import jakarta.servlet.http.Cookie;
 import java.util.List;
@@ -31,7 +32,7 @@ class LogoutTest {
     private static final String LOGOUT = "/api/v1/auth/logout";
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private PasswordHasher passwordHasher;
 
     private AuthTestClient client;

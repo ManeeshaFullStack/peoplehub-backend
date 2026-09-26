@@ -3,6 +3,7 @@ package com.peoplehub.db;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestDatabaseRoles;
 import java.util.List;
 import java.util.Map;
@@ -303,7 +304,7 @@ class RuntimePrivilegesTest {
     private static final Set<String> SESSION_STEP_UP_INSERT_COLUMNS =
             Set.of("organization_id", "employee_id", "session_id", "method");
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     @Test
     void theInventoryOfTablesIsExactlyWhatThisTestKnowsAbout() {

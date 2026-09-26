@@ -3,6 +3,7 @@ package com.peoplehub.notification.inapp;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.PeopleHubApplication;
+import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestOrganizations;
 import com.peoplehub.support.TestcontainersConfiguration;
 import java.io.BufferedReader;
@@ -14,6 +15,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -22,8 +25,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -70,15 +71,16 @@ class NotificationSseCrossInstanceTest {
     }
 
     private static ConfigurableApplicationContext startInstance() {
-        return new SpringApplicationBuilder(PeopleHubApplication.class)
-                .run(
+        List<String> args =
+                new ArrayList<>(TestDatabaseRoles.applicationDatabaseArguments(POSTGRES));
+        args.addAll(
+                List.of(
                         "--server.port=0",
                         "--spring.profiles.active=notification-test",
-                        "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
-                        "--spring.datasource.username=" + POSTGRES.getUsername(),
-                        "--spring.datasource.password=" + POSTGRES.getPassword(),
                         "--spring.data.redis.host=" + REDIS.getHost(),
-                        "--spring.data.redis.port=" + REDIS.getMappedPort(6379));
+                        "--spring.data.redis.port=" + REDIS.getMappedPort(6379)));
+        return new SpringApplicationBuilder(PeopleHubApplication.class)
+                .run(args.toArray(String[]::new));
     }
 
     private static int portOf(ConfigurableApplicationContext context) {
@@ -89,13 +91,7 @@ class NotificationSseCrossInstanceTest {
     void aNotificationWrittenOnOneInstanceReachesAnSseClientStreamingFromAnother()
             throws Exception {
         // b2-1 (V12): notification.organization_id now has a real FK to organization(id).
-        UUID org =
-                TestOrganizations.insert(
-                        new JdbcTemplate(
-                                new DriverManagerDataSource(
-                                        POSTGRES.getJdbcUrl(),
-                                        POSTGRES.getUsername(),
-                                        POSTGRES.getPassword())));
+        UUID org = TestOrganizations.insert(TestDatabaseRoles.privilegedFixtureJdbc(POSTGRES));
         UUID employee = UUID.randomUUID();
         LinkedBlockingQueue<String> received = new LinkedBlockingQueue<>();
 

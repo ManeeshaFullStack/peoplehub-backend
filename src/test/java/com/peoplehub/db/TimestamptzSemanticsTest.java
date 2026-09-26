@@ -28,6 +28,8 @@ class TimestamptzSemanticsTest {
     // wall-clock arithmetic goes wrong.
     private static final Instant NEAR_DST_CHANGE = Instant.parse("2026-03-08T06:59:59.999Z");
 
+    // The application's connection, as the runtime role: the SQL runs inside the test-managed
+    // transaction, which is rolled back, so the temporary tables never outlive a test.
     @Autowired private JdbcTemplate jdbc;
 
     @ParameterizedTest

@@ -11,6 +11,7 @@ import com.peoplehub.security.SecureTokens;
 import com.peoplehub.security.jwt.AccessTokenIssuer;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.MutableClock;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import com.peoplehub.support.TestMfaKeysEnvironment;
 import java.sql.Timestamp;
@@ -53,7 +54,7 @@ class MfaEnrollmentTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private AccessTokenIssuer issuer;
     @Autowired private MutableClock clock;
     @Autowired private MfaSecretCipher cipher;

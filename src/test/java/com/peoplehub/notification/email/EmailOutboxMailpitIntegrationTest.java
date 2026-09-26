@@ -3,15 +3,17 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.PeopleHubApplication;
+import com.peoplehub.support.TestDatabaseRoles;
 import com.peoplehub.support.TestOrganizations;
 import com.peoplehub.support.TestcontainersConfiguration;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
-import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -62,20 +64,21 @@ class EmailOutboxMailpitIntegrationTest {
         POSTGRES.start();
         REDIS.start();
         MAILPIT.start();
+        List<String> args =
+                new ArrayList<>(TestDatabaseRoles.applicationDatabaseArguments(POSTGRES));
+        args.addAll(
+                List.of(
+                        "--server.port=0",
+                        "--spring.data.redis.host=" + REDIS.getHost(),
+                        "--spring.data.redis.port=" + REDIS.getMappedPort(6379),
+                        "--spring.mail.host=" + MAILPIT.getHost(),
+                        "--spring.mail.port=" + MAILPIT.getMappedPort(1025),
+                        "--peoplehub.email.from-address=test@peoplehub.example",
+                        // Fast enough for a test to observe within a few seconds.
+                        "--peoplehub.email.outbox.interval=1s"));
         app =
                 new SpringApplicationBuilder(PeopleHubApplication.class)
-                        .run(
-                                "--server.port=0",
-                                "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
-                                "--spring.datasource.username=" + POSTGRES.getUsername(),
-                                "--spring.datasource.password=" + POSTGRES.getPassword(),
-                                "--spring.data.redis.host=" + REDIS.getHost(),
-                                "--spring.data.redis.port=" + REDIS.getMappedPort(6379),
-                                "--spring.mail.host=" + MAILPIT.getHost(),
-                                "--spring.mail.port=" + MAILPIT.getMappedPort(1025),
-                                "--peoplehub.email.from-address=test@peoplehub.example",
-                                // Fast enough for a test to observe within a few seconds.
-                                "--peoplehub.email.outbox.interval=1s");
+                        .run(args.toArray(String[]::new));
     }
 
     @AfterAll
@@ -93,7 +96,8 @@ class EmailOutboxMailpitIntegrationTest {
         EmailOutboxWriter writer = app.getBean(EmailOutboxWriter.class);
         TransactionTemplate tx =
                 new TransactionTemplate(app.getBean(PlatformTransactionManager.class));
-        JdbcTemplate jdbc = new JdbcTemplate(app.getBean(DataSource.class));
+        // Fixture setup and assertions; the application itself runs as the runtime role.
+        JdbcTemplate jdbc = TestDatabaseRoles.privilegedFixtureJdbc(POSTGRES);
         // b2-1 (V12): organization_id now has a real FK to organization(id).
         UUID org = TestOrganizations.insert(jdbc);
         String recipient = "integration-test@example.com";

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.peoplehub.common.api.correlation.CorrelationId;
 import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import com.peoplehub.support.TestOrganizations;
 import java.sql.Connection;
@@ -14,7 +15,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
-import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -33,8 +33,7 @@ class AuditLogMigrationTest {
             "INSERT INTO audit_log (organization_id, actor_id, action) VALUES (?, ?, ?)";
     private static final String TRIGGER_MESSAGE = "audit_log is append-only";
 
-    @Autowired private JdbcTemplate jdbc;
-    @Autowired private DataSource dataSource;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private UUID insertRow() {
         // b2-1 (V12): organization_id now has a real FK to organization(id).
@@ -525,7 +524,7 @@ class AuditLogMigrationTest {
                         + " FOR EACH STATEMENT EXECUTE FUNCTION audit_log_reject_change()");
         UUID org = insertRow();
 
-        try (Connection c = dataSource.getConnection();
+        try (Connection c = jdbc.getDataSource().getConnection();
                 Statement s = c.createStatement()) {
             s.execute("SET session_replication_role = replica");
             try {

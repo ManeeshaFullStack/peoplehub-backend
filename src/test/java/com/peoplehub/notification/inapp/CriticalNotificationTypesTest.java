@@ -3,6 +3,7 @@ package com.peoplehub.notification.inapp;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.util.List;
 import java.util.UUID;
@@ -25,7 +26,7 @@ class CriticalNotificationTypesTest {
     private static final List<String> NON_CRITICAL_SAMPLE =
             List.of("LEAVE_APPROVED", "MONTH_LOCKED", "BULK_IMPORT_RESULT", "ORDINARY_TYPE");
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     @Test
     void everyJavaCriticalTypeIsRejectedByTheDatabaseWithEitherChannelOff() {

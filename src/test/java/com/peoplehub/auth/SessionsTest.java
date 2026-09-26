@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import com.nimbusds.jwt.SignedJWT;
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -42,7 +43,7 @@ class SessionsTest {
                     + " Chrome/128.0.0.0 Safari/537.36";
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private PasswordHasher passwordHasher;
 
     private TestIdentities.Employee employee(TestIdentities.Organization org) {

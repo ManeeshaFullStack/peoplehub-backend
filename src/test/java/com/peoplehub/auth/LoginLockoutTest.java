@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.MutableClock;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.net.InetAddress;
 import java.sql.Timestamp;
@@ -51,7 +52,7 @@ class LoginLockoutTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private MutableClock clock;
     @Autowired private LoginService loginService;
     @MockitoSpyBean private PasswordHasher passwordHasher;

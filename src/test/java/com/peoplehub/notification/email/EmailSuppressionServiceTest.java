@@ -3,6 +3,7 @@ package com.peoplehub.notification.email;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,7 +14,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 class EmailSuppressionServiceTest {
 
     @Autowired private EmailSuppressionService service;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private static String uniqueEmail() {
         return "test-" + UUID.randomUUID() + "@example.com";

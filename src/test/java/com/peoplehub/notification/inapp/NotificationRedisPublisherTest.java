@@ -3,6 +3,7 @@ package com.peoplehub.notification.inapp;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.util.UUID;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -32,7 +33,7 @@ class NotificationRedisPublisherTest {
     @Autowired private NotificationWriter writer;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private RedisMessageListenerContainer container;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private TransactionTemplate tx;
 

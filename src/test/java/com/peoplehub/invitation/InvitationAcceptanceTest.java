@@ -11,6 +11,7 @@ import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.security.jwt.AccessTokenIssuer;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.MutableClock;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.time.Duration;
 import java.time.Instant;
@@ -54,7 +55,7 @@ class InvitationAcceptanceTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private AccessTokenIssuer issuer;
     @Autowired private MutableClock clock;
     @Autowired private InvitationAcceptanceService acceptanceService;

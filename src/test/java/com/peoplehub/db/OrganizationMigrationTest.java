@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.SqlErrors;
 import java.util.Map;
 import java.util.UUID;
@@ -31,7 +32,7 @@ class OrganizationMigrationTest {
     private static final String INSERT =
             "INSERT INTO organization (name, login_key_normalized, timezone) VALUES (?, ?, ?)";
 
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private static String uniqueLoginKey() {
         return "org-" + UUID.randomUUID();

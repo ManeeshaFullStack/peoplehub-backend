@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.peoplehub.notification.inapp.NotificationCreatedEvent;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestOrganizations;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,7 +33,7 @@ class EmailSuppressionNotifierTest {
     @Autowired private EmailSuppressionNotifier notifier;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private ApplicationEvents events;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
 
     private TransactionTemplate tx;
 

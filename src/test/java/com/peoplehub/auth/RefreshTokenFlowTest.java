@@ -7,6 +7,7 @@ import com.peoplehub.common.logging.ActorId;
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.support.IntegrationTest;
 import com.peoplehub.support.MutableClock;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import jakarta.servlet.http.Cookie;
 import java.net.InetAddress;
@@ -48,7 +49,7 @@ class RefreshTokenFlowTest {
     private static final String REFRESH = "/api/v1/auth/refresh";
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @Autowired private PasswordHasher passwordHasher;
     @Autowired private MutableClock clock;
     @Autowired private RefreshTokenService refreshTokenService;

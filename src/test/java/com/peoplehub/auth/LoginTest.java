@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import com.nimbusds.jwt.SignedJWT;
 import com.peoplehub.security.PasswordHasher;
 import com.peoplehub.support.IntegrationTest;
+import com.peoplehub.support.PrivilegedFixture;
 import com.peoplehub.support.TestIdentities;
 import java.util.List;
 import java.util.Map;
@@ -49,7 +50,7 @@ class LoginTest {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired private MockMvc mvc;
-    @Autowired private JdbcTemplate jdbc;
+    @Autowired @PrivilegedFixture private JdbcTemplate jdbc;
     @MockitoSpyBean private PasswordHasher passwordHasher;
 
     private static String loginBody(String organization, String email, String password) {
