@@ -28,7 +28,12 @@ public class MeService {
                     + " e.mfa_enabled, e.mfa_required, e.mfa_reminder_dismissed_at,"
                     + " o.name AS org_name, o.timezone,"
                     + " o.onboarding_completed_at IS NOT NULL AS onboarding_completed,"
-                    + " o.mfa_policy"
+                    + " o.mfa_policy,"
+                    // B2-7/13: a Super Admin is warned while their organization has fewer than
+                    // two active Super Admins. Only the boolean leaves this query, never the count.
+                    + " e.role = 'SUPER_ADMIN' AND (SELECT count(*) FROM employee s"
+                    + " WHERE s.organization_id = e.organization_id AND s.role = 'SUPER_ADMIN'"
+                    + " AND s.status = 'ACTIVE') < 2 AS needs_additional_super_admin"
                     + " FROM employee e JOIN organization o ON o.id = e.organization_id"
                     + " WHERE e.id = ? AND e.organization_id = ?";
 
@@ -76,7 +81,8 @@ public class MeService {
                                             role,
                                             rs.getBoolean("mfa_required"),
                                             rs.getBoolean("mfa_enabled"),
-                                            rs.getTimestamp("mfa_reminder_dismissed_at")));
+                                            rs.getTimestamp("mfa_reminder_dismissed_at")),
+                                    rs.getBoolean("needs_additional_super_admin"));
                         })
                 .optional()
                 // Only possible if the row vanished between authentication and this read: answer

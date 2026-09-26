@@ -95,7 +95,8 @@ class AccessTokenAuthenticationTest {
         assertThat(result.getResponse().getStatus()).isEqualTo(200);
         Map<String, Object> body = body(result);
         assertThat(body)
-                // firstName and welcomeSeenAt: b2-4 (B2-4/O12); mfa: b2-7 (B2-7/20).
+                // firstName and welcomeSeenAt: b2-4 (B2-4/O12); mfa: b2-7 (B2-7/20);
+                // needsAdditionalSuperAdmin: b2-7 (B2-7/13).
                 .containsOnlyKeys(
                         "id",
                         "name",
@@ -106,7 +107,8 @@ class AccessTokenAuthenticationTest {
                         "joinDate",
                         "welcomeSeenAt",
                         "organization",
-                        "mfa")
+                        "mfa",
+                        "needsAdditionalSuperAdmin")
                 .containsEntry("id", employee.id().toString())
                 .containsEntry("firstName", "Jane")
                 .containsEntry("welcomeSeenAt", null)
@@ -114,6 +116,8 @@ class AccessTokenAuthenticationTest {
                 .containsEntry("role", "SUPER_ADMIN")
                 .containsEntry("status", "ACTIVE")
                 .containsEntry("joinDate", "2026-01-05");
+        // The only (active) Super Admin of the organization.
+        assertThat(body).containsEntry("needsAdditionalSuperAdmin", true);
         assertThat(body.get("organization"))
                 .isEqualTo(
                         Map.of(

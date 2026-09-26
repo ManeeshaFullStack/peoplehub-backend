@@ -59,6 +59,7 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                     mfaStepResponses(),
                     "/api/v1/auth/mfa/enroll",
                     Map.of(
+                            "400", "The challenge token is missing.",
                             "401", "The challenge cannot be used; sign in again.",
                             "403", "The request came from a foreign origin."),
                     "/api/v1/auth/mfa/enroll/confirm",
@@ -126,7 +127,9 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                             "409",
                             "MFA is not enabled."));
 
-    /** The same, for the organization MFA administration and promotion endpoints (b2-7). */
+    /**
+     * The same, for the organization MFA administration, promotion and onboarding endpoints (b2-7).
+     */
     private static final Map<String, Map<String, String>> ADMIN_PROBLEM_RESPONSES =
             Map.of(
                     "/api/v1/organization/security/mfa-policy",
@@ -157,7 +160,9 @@ class SecurityOpenApiCustomizer implements OpenApiCustomizer {
                                     "Not a Super Admin, the caller themselves, or no fresh step-up"
                                             + " (step-up-required, mfa-enrollment-required).",
                             "404", "No such employee in the caller's organization.",
-                            "409", "Only an active Employee can be promoted."));
+                            "409", "Only an active Employee can be promoted."),
+                    "/api/v1/organization/onboarding/complete",
+                    Map.of("403", "Not a Super Admin."));
 
     @Override
     public void customise(OpenAPI openApi) {

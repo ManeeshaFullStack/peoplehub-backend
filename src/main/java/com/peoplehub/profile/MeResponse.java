@@ -13,6 +13,10 @@ import java.util.UUID;
  * @param welcomeSeenAt when the one-time welcome screen was acknowledged, or {@code null} while it
  *     should still be shown (Spec 10.2)
  * @param mfa the caller's MFA state under their organization's policy (b2-7, B2-7/20)
+ * @param needsAdditionalSuperAdmin true only for a Super Admin whose organization has fewer than
+ *     two active Super Admins (b2-7, B2-7/13; Spec 3.3): the onboarding and security screens warn
+ *     that nobody inside the organization could recover their account. Informational only; it
+ *     blocks nothing, and the count itself is never exposed
  */
 public record MeResponse(
         UUID id,
@@ -24,7 +28,8 @@ public record MeResponse(
         LocalDate joinDate,
         Instant welcomeSeenAt,
         Organization organization,
-        Mfa mfa) {
+        Mfa mfa,
+        boolean needsAdditionalSuperAdmin) {
 
     /** The employee's own organization: display data only, never another tenant's. */
     public record Organization(String name, String timezone, boolean onboardingCompleted) {}
